@@ -1,0 +1,4 @@
+interface:
+  display_name: "Task Runtime"
+  short_description: "Discover and maintain project tasks with progressive disclosure"
+  default_prompt: "Use $task-runtime to find or resume the relevant project task without loading unrelated task history."

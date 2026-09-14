@@ -1,245 +1,436 @@
-# AGENTS 工作流模板
+# AGENTS Core
 
-这个仓库保存一套面向 Codex 的可解释开发与持久化任务记录模板，用于在不同机器、项目和会话之间复用协作规则。
+这是一个面向个人 Agent 工作流的核心仓库，用于安全初始化新项目，并为长任务提供可执行的渐进式上下文管理能力。它不再只是 Markdown 模板集合：仓库包含项目规则、Task schema、`task-runtime` Skill、`taskctl` CLI、初始化脚本和自动化测试。
 
-仓库中的文件是“候选规则源”，不是覆盖本地文件的授权。任何 Agent 将本仓库内容同步到本地前，都必须先读取本地规则、生成差异、与用户对齐，并在确认后进行增量更新。
+设计重点是控制上下文边界。Agent 搜索任务时只看到 Meta，确定当前 Task 后只读取其入口，详细设计、运行手册、决策、迭代和证据都必须按明确条件逐个加载。
 
-## 文件说明
+## 仓库内容
 
-| 文件 | 用途 | 建议安装位置 |
+| 路径 | 用途 | 初始化目标 |
 |---|---|---|
-| `GLOBAL_AGENTS.md` | 跨项目通用的工作方式、可解释开发、验证与恢复规则 | `~/.codex/AGENTS.md`，或 `$CODEX_HOME/AGENTS.md` |
-| `PROJECT_AGENTS.md` | 项目级任务目录、执行边界、验证与 Git 规则 | `<项目根目录>/AGENTS.md` |
-| `TASK_WORKFLOW.md` | 创建、重开、拆分、迁移任务时按需读取的工作流 | `<项目根目录>/tasks/TASK_WORKFLOW.md` |
-| `TASK_TEMPLATE.md` | 复杂任务包的当前状态与恢复入口模板 | `<项目根目录>/tasks/TASK_TEMPLATE.md` |
-| `TASK_ITERATION_TEMPLATE.md` | 单轮迭代的设计、实现与验证证据模板 | `<项目根目录>/tasks/TASK_ITERATION_TEMPLATE.md` |
+| `AGENTS.md` | 本仓库自己的维护规则 | 不复制 |
+| `GLOBAL_AGENTS.md` | 跨项目最小协作原则 | 用户级 `AGENTS.md` 的 Core 受管块 |
+| `PROJECT_AGENTS.md` | 项目规则模板 | `<project>/AGENTS.md` |
+| `TASK_WORKFLOW.md` | Task 完整协议 | `<project>/.tasks/TASK_WORKFLOW.md` |
+| `TASK_TEMPLATE.md` | schema 4 Task 入口模板 | `<project>/.tasks/TASK_TEMPLATE.md` |
+| `TASK_ITERATION_TEMPLATE.md` | 可选过程证据模板 | `<project>/.tasks/TASK_ITERATION_TEMPLATE.md` |
+| `skills/task-runtime/` | Agent Task Skill 与协议引用 | `<project>/.agents/skills/task-runtime/` |
+| `skills/task-runtime/scripts/taskctl.py` | Task CLI 权威实现 | `<project>/.tasks/bin/taskctl` 和 Skill scripts |
+| `scripts/init_project.py` | 新项目初始化器 | 不复制 |
+| `scripts/sync_global_agents.py` | 用户级规则安装与更新器 | 不复制，直接从 Core 运行 |
+| `.tasks/` | 本仓库自己的 Task Runtime 和真实 Task | 不作为模板整体复制 |
 
-`PROJECT_AGENTS.md` 是通用项目模板。首次安装后，应根据真实项目补充入口、构建与测试命令、环境边界和必须保持的项目约束。
+仓库文件是规则和实现源，不构成覆盖目标项目已有文件的授权。
 
-## 设计目标
+### 系统级（用户级）AGENTS.md
 
-- 编码前建立代码事实地图、目标调用链和验收标准。
-- 按可独立验证的纵向切片实现，避免一次性生成大量难以理解的代码。
-- 在实现过程中同步解释调用链、数据流、关键决策和排障入口。
-- 使用持久化任务包分离当前状态和历史证据，并按需读取迭代、设计和验证内容。
-- 同时满足功能验收与可解释性验收。
-- 更新本地规则时保护用户定制，采用类似 Git 三方合并的增量更新逻辑。
+首次初始化项目和后续同步已有项目时，都必须把系统级规则纳入同一轮更新。项目初始化器本身仍不越界修改用户目录，而是由工作流同时调用全局同步器和项目级工具，汇总两部分 dry-run 后交给用户一次 Review。未获得对本轮具体计划的确认前，即使没有冲突也不得写入。
 
-## Task 目录结构
+Codex 的默认系统级目标为 `${CODEX_HOME:-$HOME/.codex}/AGENTS.md`，其他客户端或自定义位置必须显式传入 `--target`。全局同步器可单独用于排查，但不应在项目接入或更新时被遗漏。
 
-任务工作流和模板位于 `tasks/` 根目录，只在创建、重开、拆分、迁移任务或结构不清时读取 `TASK_WORKFLOW.md`。已有任务的普通恢复不需要重复读取工作流。
+```bash
+# 只预览，不写入
+python3 scripts/sync_global_agents.py
 
-复杂任务默认使用以下结构：
+# 用户 Review 并确认上一步输出后，带回原计划摘要应用
+python3 scripts/sync_global_agents.py \
+  --apply \
+  --approve-plan <global-plan-digest>
+```
+
+同步器只替换 `agents-core-managed` 受管块。本机长期规则放在该块之外，会在后续更新中原样保留；如果受管块被手工修改且与记录哈希不一致，同步器会拒绝覆盖。写入现有文件前会备份到目标目录下的 `.agents-core-backups/`，并使用原子替换。
+
+首次遇到没有受管块的旧全局文件时，同步器默认报冲突。Review 旧内容后，显式指定需要保留的本机章节标题完成一次性迁移：
+
+```bash
+python3 scripts/sync_global_agents.py \
+  --adopt-local-tail-from '# 本机自定义规则'
+python3 scripts/sync_global_agents.py \
+  --adopt-local-tail-from '# 本机自定义规则' \
+  --apply \
+  --approve-plan <global-plan-digest>
+```
+
+该参数会用当前 `GLOBAL_AGENTS.md` 替换标题之前的旧模板，只保留从指定标题开始的内容，因此必须先检查预览，并确认标题是唯一、准确的语义边界。正常维护应先提交 Core；只有明确需要试用未提交版本时才增加 `--allow-dirty-source`，同步元数据会记录 `source_dirty` 和精确内容哈希。
+
+dry-run 输出的 `plan_digest` 绑定 Core 源内容、系统级目标当前内容、目标路径、迁移参数和预期结果。`--apply` 必须通过 `--approve-plan` 带回用户实际 Review 的摘要；Review 后任一输入变化都会产生新摘要并拒绝旧确认。确认只授权本轮这份计划，不授权未来更新。更新后的规则只对新会话完整生效。
+
+也可以让 Agent 执行：
 
 ```text
-tasks/YYYY-MM-DD/YYYY-MM-DD-HHMMSS-<slug>/
-├── TASK.md
-├── iterations/
-│   └── Fxxx-<slug>.md
-├── design/                 # 按需
-├── evidence/               # 按需
-└── archive/                # 旧任务迁移时按需
+请使用 AGENTS Core 检查当前客户端的用户级 AGENTS.md。
+先读取 Core 的 README.md、GLOBAL_AGENTS.md 和 scripts/sync_global_agents.py，确认客户端实际使用的全局文件位置。
+只执行 dry-run；若是未受管旧文件，先做语义检查并提出明确的本机内容保留边界，不得覆盖。
+展示计划、plan_digest 和影响后停止，等待我 Review。只有我确认这份具体计划后，才能用同一 plan_digest 执行 --apply，并检查备份、最终 diff 和同步元数据。
 ```
 
-- `TASK.md` 是当前权威状态和恢复索引，Agent 默认先读它。
-- `iterations/Fxxx-<slug>.md` 保存单轮问题、设计、实际改动、验证和历史证据。
-- `design/` 保存超过入口适宜长度的当前详细设计；`evidence/` 保存大体积验证材料。
-- 默认只读取 `TASK.md`、活动迭代和它们直接引用的文件。仅在根因或证据追溯需要时读取已完成迭代和归档。
-- 一个任务同一时间默认只有一个活动迭代；任务完成时 `active_iteration` 为 `null`，重开时再指向新的递增迭代。
-- `TASK.md` 建议控制在 200 行以内；超过 300 行时必须拆出历史正文、详细设计或验证材料，不能通过折叠标签伪装大体积内容。
-- 同一目标的缺陷、遗漏、回归和小范围优化仍属于原 Task，但新增独立迭代文件，不把正文无限追加到入口。
-- schema 3 用于新任务；已有 schema 2 任务包仍然有效，不为版本统一批量重写。
+## 推荐：让 Agent 直接完成接入和更新
 
-## 首次安装原则
+日常使用不要求记住本仓库的文件映射，也不需要替换 Core 地址。下面的 Prompt 已固定使用 `https://github.com/wuwenbin970731/AGENTS.git`；Agent 应通过已认证 Git 获取临时检出，并固定 `origin/main` 提交。
 
-首次安装也不能无条件覆盖现有文件。
+### 首次初始化一个新项目
 
-1. 解析实际 `CODEX_HOME`；未设置时，全局目录默认为 `~/.codex`。
-2. 检查目标文件是否存在，并读取所有适用的上级、项目级和子目录 `AGENTS.md` 或 `AGENTS.override.md`。
-3. 如果目标不存在，向用户展示将创建的文件、路径和主要规则，获得确认后创建。
-4. 如果目标已存在，进入下文的增量同步流程。
-5. 将 Task 工作流、根 Task 模板和迭代模板安装到项目约定位置；只有任务实例中的 `TASK.md` 作为默认恢复入口。
-6. 项目模板安装后，根据真实仓库补充项目专属信息，禁止根据其他项目猜测命令和约束。
-7. 不自动修改 `.gitignore`，不自动暂存、提交或推送本地项目文件。
-
-## 强制更新协议
-
-后续 Agent 从本仓库更新本地文件时，必须遵守以下协议。
-
-### 禁止直接覆盖
-
-禁止使用以下方式更新已有本地文件：
-
-- 直接复制远端文件覆盖本地文件。
-- 使用下载重定向覆盖目标文件。
-- 删除本地文件后重新生成。
-- 使用 `git checkout`、`git restore` 或模板渲染强制替换。
-- 因远端模板删除某条规则而自动删除本地规则。
-
-必须先比较、解释、确认，再使用局部补丁更新。
-
-### 三方语义合并
-
-同步时使用三个版本：
-
-- `base`：上次成功同步到本地的本仓库版本。
-- `ours`：用户当前的本地文件。
-- `theirs`：本仓库准备同步的目标版本。
-
-推荐在本地文件末尾保留不参与规则解释的来源注释：
-
-```html
-<!-- agents-template-sync
-source: https://github.com/wuwenbin970731/AGENTS
-source_path: GLOBAL_AGENTS.md
-base_commit: <上次成功同步的提交 SHA>
--->
-```
-
-项目文件、Task 工作流和两个任务模板分别记录各自的 `source_path`。只有合并成功并完成验证后，才能更新 `base_commit`。
-
-如果本地文件没有同步元数据，Agent 必须明确说明无法进行严格三方比较，退化为保守的双向语义比较；所有删除、替换和疑似冲突都必须由用户确认。
-
-### 合并决策规则
-
-| 情况 | 默认处理 |
-|---|---|
-| `ours` 与 `base` 相同，只有 `theirs` 修改 | 列为可应用的远端更新，向用户说明后等待确认 |
-| `theirs` 与 `base` 相同，只有 `ours` 修改 | 保留本地修改 |
-| 双方新增内容且不冲突 | 提议合并保留双方内容，确认后增量加入 |
-| 双方修改同一规则且语义一致 | 提议整理为一条更清晰的规则，确认后修改 |
-| 双方修改同一规则且语义不同 | 标记冲突，展示两方内容、影响和建议，等待用户选择 |
-| `theirs` 删除而 `ours` 保留 | 不自动删除；列为候选删除并询问用户 |
-| `ours` 包含项目特有规则 | 默认保留，不用通用模板替换 |
-| 远端规则降低安全、验证或用户确认要求 | 不自动采用，必须单独提示风险并确认 |
-
-项目级规则可以细化或覆盖全局通用规则。同步全局文件时，不得将全局模板中的通用默认值强行写入项目专属配置；同步项目文件时，不得删除已经确认的项目入口、命令、数据边界和安全约束。
-
-## Agent 同步步骤
-
-Agent 接到“从本仓库更新本地规则”的请求后，应按以下顺序执行：
-
-1. **确认范围**：确认要更新全局文件、项目文件、Task 工作流、根 Task 模板和迭代模板中的哪些目标。
-2. **刷新远端引用**：优先使用已认证的 Git 检出；没有本地检出时先使用已认证凭据克隆。确认 `origin` 指向本仓库后执行 `git fetch origin`。如果私有仓库认证、网络或 fetch 失败，停止并报告，不得静默退回本地旧版本、网页缓存或历史对话内容。
-3. **固定源版本**：fetch 成功后，以 `refs/remotes/origin/main` 对应的提交作为本次 `theirs`，记录完整 SHA，并在后续比较中保持不变。不得使用本地 `HEAD`、未刷新的远端引用或同步元数据中的 `base_commit` 充当最新远端版本；`base_commit` 只表示上次成功同步的 `base`。
-4. **读取源文件**：从固定的 `theirs` 提交读取 `README.md` 和目标模板，检查仓库内是否出现意外脚本、二进制文件或与文档目标无关的内容；不得执行仓库中的程序。
-5. **读取本地规则链**：解析 `CODEX_HOME`、项目根目录和当前目录，读取实际生效的 `AGENTS.md`、`AGENTS.override.md`、Task 工作流及两个任务模板。
-6. **寻找 `base`**：从同步元数据或用户提供的历史提交确定上次同步版本。
-7. **建立语义差异表**：按章节和规则比较 `base`、`ours`、`theirs`，区分新增、修改、删除、移动、重复和冲突。
-8. **提交更新提案**：向用户展示每个目标文件的拟新增、拟修改、候选删除、冲突和保持不变项，并说明影响。
-9. **等待确认**：在用户确认具体提案前，不修改任何已有本地文件。
-10. **增量应用**：使用局部补丁更新；保留本地未冲突规则、格式和项目专属内容。
-11. **验证结果**：重新读取文件，检查 Markdown 结构、重复或矛盾规则、敏感信息、目标路径以及实际差异。
-12. **更新元数据**：仅在成功合并后，将 `base_commit` 更新为本次固定的提交 SHA。
-13. **报告交付**：列出实际修改文件、采用和拒绝的远端规则、冲突处理、验证结果及仍需人工决定的内容。
-
-## 更新提案格式
-
-建议 Agent 在写入前向用户提供如下表格：
-
-| 目标文件 | 章节 | 远端变化 | 本地变化 | 建议动作 | 是否冲突 |
-|---|---|---|---|---|---|
-| `~/.codex/AGENTS.md` | 可解释性交付 | 新增排障地图 | 本地无修改 | 增量加入 | 否 |
-| `<repo>/AGENTS.md` | 验证 | 修改测试策略 | 本地已有专属命令 | 保留本地并补充通用原则 | 待确认 |
-
-获得确认时，应让确认范围可审计，例如“同意第 1、2 项；第 3 项保留本地版本”，不要把一次确认扩展为未来所有更新的覆盖授权。
-
-## 推荐调用提示
-
-### 日常快捷同步
-
-适合已经完成过首次同步、且本地文件包含有效同步元数据的环境：
+在目标项目会话中发送：
 
 ```text
-请按照 https://github.com/wuwenbin970731/AGENTS 的 README 协议，检查并提议同步全局 AGENTS、当前项目 AGENTS、TASK_WORKFLOW、TASK_TEMPLATE 和 TASK_ITERATION_TEMPLATE。
+请使用 AGENTS Core 初始化当前项目。
 
-先使用已认证的 Git 对正确的本地检出执行 git fetch origin；没有本地检出时先使用已认证凭据克隆。只有 fetch 成功后，才能把 refs/remotes/origin/main 的完整 SHA 固定为本次 theirs。不要把本地 HEAD、未刷新的 origin/main、base_commit 或缓存内容当成最新远端版本；远端访问失败时停止并报告。
+AGENTS Core：https://github.com/wuwenbin970731/AGENTS.git
+目标项目：当前工作区根目录
 
-随后执行 base/ours/theirs 三方语义比较。先给我更新提案和冲突列表，不要直接修改；等我确认后再增量更新。
+请执行以下流程：
+1. 确认目标项目根目录、Git 状态、当前生效的项目级 AGENTS.md / AGENTS.override.md，以及当前客户端实际使用的系统级 AGENTS.md。
+2. 使用当前已认证 Git 将上述 AGENTS Core 检出到安全的临时目录，fetch origin，并将 origin/main 的完整 SHA 固定为本次源版本；网络或认证失败时停止，不使用缓存版本。
+3. 阅读 Core 的 README.md、GLOBAL_AGENTS.md、PROJECT_AGENTS.md、scripts/sync_global_agents.py 和 scripts/init_project.py，确认系统级与项目级目标、安装文件和安全边界。不要读取 Core 自身 .tasks 下的任务正文。
+4. 使用临时检出中的脚本同时执行两个 dry-run：运行 `scripts/sync_global_agents.py` 检查当前客户端实际使用的系统级目标，运行 `scripts/init_project.py` 并以当前工作区根目录作为项目参数。不得传 `--apply`。
+5. 将两个结果汇总成一份 Review 提案，分别列出系统级受管块和项目级文件的创建、更新、不变、冲突、本机保留内容、风险及各自 `plan_digest`。即使两边都无冲突，也必须停止并等待我明确确认。
+6. 若全局文件未受管，先提出准确的本机内容保留边界并重新 dry-run；若项目已有不同内容或未知 `.tasks/`，先给出保留项目规则的语义合并提案。不得直接覆盖。
+7. 只有我确认本轮具体提案后，才应用获批部分：全局同步使用 `--apply --approve-plan <global-digest>`；无冲突的首次项目安装使用 `--apply --approve-plan <project-digest>`；冲突项只按确认后的语义补丁处理。任一摘要失效时重新 dry-run 和 Review，不沿用旧确认。
+8. 安装后根据当前项目的真实代码、配置和文档，补充 AGENTS.md 的项目入口、测试命令、环境边界和不变量；不得从其他项目猜测。
+9. 运行全局同步 dry-run确认 `unchanged`、`.tasks/bin/taskctl --version`、`.tasks/bin/taskctl doctor` 和适合本项目的最小检查。
+10. 展示系统级备份与元数据、项目实际变更和 Git diff；不要自动暂存、提交或推送。提示我开启新会话。
 ```
 
-### 首次接入或严格同步
+所有新仓库都会先停在合并后的 dry-run Review 阶段；“没有冲突”不再构成自动写入授权。
 
-适合首次安装、同步元数据缺失、规则链复杂或希望完整审计的环境：
+### Core 更新后同步已有项目
+
+在已经初始化过的目标项目会话中发送：
 
 ```text
-请按照 https://github.com/wuwenbin970731/AGENTS 的 README 协议，检查并提议同步以下本地文件：
+请按照 AGENTS Core 的 README 协议更新系统级 AGENTS.md，以及当前项目中的 Agent 规则、Task Runtime 和 task-runtime Skill。
 
-- 实际 CODEX_HOME 下的全局 AGENTS.md；
-- 当前项目根目录的 AGENTS.md；
-- 当前项目的 tasks/TASK_WORKFLOW.md；
-- 当前项目的 tasks/TASK_TEMPLATE.md；
-- 当前项目的 tasks/TASK_ITERATION_TEMPLATE.md。
+AGENTS Core：https://github.com/wuwenbin970731/AGENTS.git
+目标项目：当前工作区根目录
 
-请执行：
-1. 查找本地已有检出并确认 origin 指向该仓库；如果不存在，使用当前环境已配置的 GitHub 凭据克隆。不要依赖网页登录态或缓存页面读取私有仓库。
-2. 使用已认证的 Git 执行 git fetch origin。认证、网络或 fetch 失败时立即停止并报告，不得继续使用旧 clone、缓存内容或历史对话中的模板。
-3. fetch 成功后，将 refs/remotes/origin/main 对应的完整 SHA 固定为本次 theirs 并报告；从该提交读取 README 和五个模板。不要使用本地 HEAD、未刷新的远端引用或 base_commit 作为最新远端版本，比较过程中不要悄悄切换提交。
-4. 解析实际 CODEX_HOME 和项目根目录，读取本地真实文件以及当前目录实际生效的 AGENTS.md、AGENTS.override.md 指令链。
-5. 从本地同步元数据确定 base 版本；base_commit 只表示上次成功同步的 base。再对 base、ours、theirs 做逐文件、逐章节的语义比较。如果无法确定 base，明确说明并退化为保守的双向比较，不自行推断历史版本。
-6. 先输出更新提案，分别列出拟新增、拟修改、候选删除、冲突、保持不变项及影响；不要修改任何本地文件。
-7. 等我逐项确认后，只应用获批内容。使用增量补丁，保留本地专属规则、格式和未冲突修改；禁止直接覆盖、删除后重建或因远端删除而自动删除本地规则。
-8. 修改后重新读取并验证 Markdown 结构、重复或矛盾规则、敏感信息、目标路径和实际差异。只有验证通过后，才能把 base_commit 更新为本次固定的远端提交 SHA。
-9. 报告实际修改文件、采用和拒绝的规则、冲突处理及验证结果。除非我另行明确授权，不要暂存、提交或推送本地项目文件。
+请执行以下流程：
+1. 读取当前项目 `.tasks/agent-core.json`，取得 source、source_commit 和已安装文件哈希；读取当前项目实际生效的 AGENTS.md / AGENTS.override.md，并确认当前客户端实际使用的系统级 AGENTS.md。
+2. 使用已认证 Git 刷新正确的 Core 检出，并将 origin/main 的完整 SHA 固定为本次 theirs。认证、fetch 或历史提交读取失败时停止，不退回缓存或历史对话。
+3. 阅读 Core 当前 README.md、GLOBAL_AGENTS.md、scripts/sync_global_agents.py 和 scripts/init_project.py 中的 COPY_MAP，确定系统级受管块、当前项目受管文件及新增文件。不要把 Core 自身的 Task 实例复制到当前项目。
+4. 对系统级目标执行 `sync_global_agents.py` dry-run；同时使用 source_commit 中的项目源文件作为 base、当前项目文件作为 ours、固定的 Core 新提交作为 theirs，逐文件、逐章节进行项目级三方语义比较。不得修改任何目标。
+5. 输出一份合并 Review 提案：系统级部分列出 action、本机保留内容、风险和 `plan_digest`；项目级部分列出可直接更新、本地专属修改、双方一致修改、冲突、远端新增、候选删除和保持不变项。
+6. 即使系统级或项目级没有冲突，也必须等待我对本轮具体提案的明确确认。确认可以同时批准两部分，也可以只批准其中一部分；不得扩展为未来更新授权。
+7. 确认后再增量应用：全局同步使用已 Review 的 `--approve-plan`；项目中 ours 等于 base 的文件可更新为 theirs，ours 独有内容保留，双方修改同一区域时语义合并，远端删除不得自动删除本地内容。禁止直接覆盖整个项目 AGENTS.md。任一输入变化时重新 dry-run 和 Review。
+8. 代码和 Skill 脚本也要按清单更新并保持可执行位；新增的下游文件必须已登记在 Core 的 COPY_MAP 中。
+9. 合并和验证成功后，将 `.tasks/agent-core.json` 更新到本次 theirs 提交并记录新版源文件哈希；若 Core 工作树是 dirty 状态，不得把它记录成可复现的正式同步基线。
+10. 运行全局同步 dry-run确认 `unchanged`、`.tasks/bin/taskctl --version`、`.tasks/bin/taskctl doctor`、Skill 校验、`git diff --check` 和适合当前项目的测试。报告实际采用、保留和拒绝的变化，不要自动暂存、提交或推送，并提示我开启新会话。
 ```
 
-## 旧 Task 按需迁移
+当前版本没有自动覆盖式项目 updater。更新流程由 Agent 执行项目级语义比较，因为下游 `AGENTS.md` 和部分 Markdown 往往包含项目专属修改；系统级部分则由同步器生成并校验计划摘要。`scripts/init_project.py --apply` 是首次安装命令，不是已有项目的更新命令。
 
-不要为了统一格式批量刷新旧 Task。已完成且没有重新使用需求的旧文档保持原样；仍在进行、准备重开、已经过长或频繁读取的旧文档，才考虑迁移到目录式结构。
+### 初始化或更新后开始使用 Task
 
-### 推荐迁移提示
-
-将 `<旧 Task 路径>` 替换为实际文件后发送给 Agent：
+规则或 Skill 更新后建议开启一个新会话，使项目 `AGENTS.md` 和 `task-runtime` Skill 被重新发现。然后可以直接发送：
 
 ```text
-请按照当前项目 AGENTS.md、tasks/TASK_WORKFLOW.md、tasks/TASK_TEMPLATE.md 和 tasks/TASK_ITERATION_TEMPLATE.md，检查旧 Task `<旧 Task 路径>` 是否应迁移为目录式 Task 包。
-
-本次只处理这一份旧 Task，不扫描后批量迁移其他文档。先进行只读检查并输出迁移提案，不要立即修改文件：
-
-1. 读取旧 Task、当前适用的 AGENTS 规则、Task 工作流和两个 Task 模板；检查项目根目录、Git 状态、旧 Task 的状态、行数、已有 Fxxx 编号、引用关系和目标是否仍然有效。
-2. 重新检查与该 Task 直接相关的当前代码、配置、测试、日志、输出和外部进程。区分历史记录与当前事实，不把旧文档摘要直接当成当前真实状态。
-3. 判断是否值得迁移：仍在进行、准备重开、已经过长或频繁读取时建议迁移；已经完成且没有重新使用需求时，报告“不建议迁移”并停止。
-4. 如果建议迁移，先展示目标目录、文件映射、活动迭代编号、需要保留的旧链接、拟写入 TASK.md 的当前摘要，以及无法确认的事实或冲突。说明哪些内容来自现场验证，哪些仅来自历史文档。
-5. 不追溯拆分全部旧历史。旧文档原文应完整移入 `<task-dir>/archive/legacy-task.md`；旧路径保留轻量跳转文件，指向新的 `<task-dir>/TASK.md` 和归档原文。迁移后的新工作从不冲突的下一个 Fxxx 迭代文件开始。
-6. 等我确认迁移提案后再修改。实施时优先使用可保留历史的文件移动，迁移前后校验归档原文内容一致；不得总结后覆盖、删减或“修正”历史证据。
-7. 新的 TASK.md 只保存当前权威状态、活动迭代、当前调用链、接口和参数摘要、当前可复用命令、验证结论、排障地图与恢复入口。历史正文、大段日志、错误堆栈和批量结果不得复制进去。
-8. 修改后验证目录结构、Markdown、相对链接、frontmatter、Task ID、Fxxx 编号、原文完整性、敏感信息和 Git 差异。报告实际修改、当前事实的证据边界和仍需人工确认的内容。
-
-除非我另行明确授权，不要修改业务代码，不要迁移其他 Task，不要暂存、提交或推送。
+请使用项目内的 task-runtime 处理这个需求。
+先判断它是 light、tracked 还是 rigorous。
+如果需要 Task，先只搜索现有 Task 的 Meta；复用目标和完成标准相同的 Task。
+没有匹配项时再创建新 Task。确定当前 Task 后只读取 TASK.md，其他资源严格按照 Context Map 按需加载。
 ```
 
-## 仓库模板维护
-
-更新本仓库自身时也应遵循最小改动原则：
-
-- 先说明要解决的问题和影响的模板。
-- 保持全局规则与项目规则职责分离，避免重复和相互矛盾。
-- 保持模板通用，不加入私人路径、凭据、内部主机、单一项目事实或短期任务状态。
-- 修改后检查五个模板之间的路径、状态名、必需章节和同步协议是否一致。
-- 提交信息应说明规则变化的目的，而不仅是“更新文档”。
-
-### 更新远端模板仓库时
-
-需要维护本仓库模板时，可以向 Agent 发送以下提示，并补充本次具体目标：
+恢复已有任务时发送：
 
 ```text
-请维护远端模板仓库 https://github.com/wuwenbin970731/AGENTS。
-
-本次目标：<描述要新增、修改或解决的问题>
-
-请先检查当前分支、工作区状态、README.md、GLOBAL_AGENTS.md、PROJECT_AGENTS.md、TASK_WORKFLOW.md、TASK_TEMPLATE.md 和 TASK_ITERATION_TEMPLATE.md，说明需求会影响哪些文件和规则。随后按最小改动原则实施，并遵守：
-
-1. 保持全局规则、项目规则和任务模板的职责分离，避免重复、矛盾或错误覆盖。
-2. 保持模板通用，不写入私人路径、凭据、内部主机、单一项目事实或短期任务状态。
-3. 如果新规则与现有规则冲突、会降低安全或验证要求，或会改变既有工作流，先列出两方内容、影响和建议，等我确认后再修改该冲突项。
-4. 不要把远端模板仓库的变化自动同步或覆盖到本地全局/项目 AGENTS.md；本次只维护模板源仓库。
-5. 修改后检查 Markdown 结构，并交叉检查五个模板之间的路径、状态名、必需章节、同步元数据和 README 协议是否一致；运行 git diff --check，确认没有敏感信息和无关文件。
-6. 完成后报告实际修改文件、关键差异和验证结果。提交或推送前先向我展示拟提交范围并等待确认；获得确认后只暂存明确文件，提交并推送当前分支。除非我明确要求，不要创建 PR。
+请使用项目内的 task-runtime 继续 Task <task-id>。
+先读取它的 TASK.md 并重新核对 Git、代码、测试、日志和外部状态；不要默认读取 iterations 或 archive。只有当前动作满足 Context Map 的读取条件时，才读取对应单个资源。
 ```
+
+即使 Agent 客户端没有发现项目本地 Skill，项目 `AGENTS.md` 仍保存了最小加载协议；此时可以明确要求它使用 `.tasks/bin/taskctl`。
+
+## 快速开始
+
+### 1. 预览系统级和新项目初始化
+
+```bash
+python3 scripts/sync_global_agents.py
+python3 scripts/init_project.py /path/to/project
+```
+
+默认只输出计划，不写文件。初始化器会检查：
+
+- 目标项目是否存在；
+- `.tasks/` 是否为空或由本仓库管理；
+- `AGENTS.md` 和目标文件是否已存在不同内容；
+- 将创建哪些规则、模板、Skill 和脚本。
+
+两个命令都默认只输出计划，不写文件。Agent 应把两份结果合并展示，等待用户 Review。
+
+### 2. Review 后显式应用
+
+```bash
+python3 scripts/sync_global_agents.py \
+  --apply \
+  --approve-plan <global-plan-digest>
+python3 scripts/init_project.py /path/to/project \
+  --apply \
+  --approve-plan <project-plan-digest>
+```
+
+`plan_digest` 不是永久授权令牌。它只代表一次具体 dry-run；Core 内容、目标内容、路径、参数或计划发生变化后，旧摘要会被拒绝，必须重新预览并 Review。
+
+初始化后项目获得：
+
+```text
+project/
+├── AGENTS.md
+├── .agents/skills/task-runtime/
+└── .tasks/
+    ├── config.json
+    ├── agent-core.json
+    ├── .gitignore
+    ├── bin/taskctl
+    ├── TASK_WORKFLOW.md
+    ├── TASK_TEMPLATE.md
+    └── TASK_ITERATION_TEMPLATE.md
+```
+
+如果存在不同内容，初始化器返回冲突且不覆盖。已有项目应先进行后文的语义合并。初始化器不修改 `.gitignore`，也不暂存、提交或推送。
+
+`.tasks/agent-core.json` 记录源仓库、源提交、工作树是否有未提交修改，以及每个安装文件的 SHA-256。源仓库干净时，后续更新可以通过 `source_commit` 恢复三方比较所需的 base；清单不是 Task 索引。
+
+### 3. 验证安装
+
+```bash
+.tasks/bin/taskctl --version
+.tasks/bin/taskctl doctor
+```
+
+`taskctl` 只依赖 Python 3.10+ 标准库。
+
+## Task 存储
+
+默认 Task 根目录为项目根目录下的 `.tasks/`，避免与业务代码常见的 `tasks/` 目录冲突：
+
+```text
+.tasks/YYYY-MM-DD/<task-id>/
+├── TASK.md                    # 必需：Meta、当前契约和上下文地图
+├── design/                    # 当前详细设计，按需
+├── runbooks/                  # 运行与恢复步骤，按需
+├── decisions/                 # 长期设计决定，按需
+├── iterations/                # 单轮过程证据，按需
+├── evidence/                  # 大型证据，按需
+└── archive/                   # 旧原文，按需
+```
+
+新 Task 默认只创建 `TASK.md`。目录名称以 `.` 开头不会让 Git 自动忽略它；项目可自行决定是否纳入版本控制。
+
+会话绑定和写入锁不属于 Task 内容，保存在 Git 私有目录：
+
+```text
+<absolute-git-dir>/task-state/
+├── sessions/
+└── locks/
+```
+
+非 Git 项目，或运行沙箱禁止写入 Git 私有目录时，自动降级到已忽略的 `.tasks/.state/`。
+
+## 四级渐进式披露
+
+| 层级 | 内容 | 进入条件 |
+|---|---|---|
+| L0 | `TASK.md` frontmatter Meta | 搜索和关联任务查询 |
+| L1 | 当前任务 `TASK.md` | Task 已确定 |
+| L2 | 当前设计、runbook、decision | Context Map 的读取条件匹配当前工作 |
+| L3 | iteration、evidence、archive | 需要追溯或核验具体结论 |
+
+核心约束：
+
+- `light` 工作不扫描 Task。
+- 搜索最多返回八个候选，且不读取正文。
+- 读取 `TASK.md` 不代表展开其中链接。
+- Context Map 必须说明每个资源保存什么、何时读取。
+- 资源不会递归展开它引用的其他文件。
+- 其他 Task 默认只暴露 Meta。
+
+## `taskctl` 使用
+
+### 发现和读取
+
+```bash
+# 默认只搜索 open Task 的 Meta
+.tasks/bin/taskctl search "camera quality" --limit 8
+
+# 单个 Task 的 Meta
+.tasks/bin/taskctl show <task-id>
+
+# 明确打开当前 Task 入口，不展开链接
+.tasks/bin/taskctl show <task-id> --entry
+
+# 只列 Context Map
+.tasks/bin/taskctl context list <task-id>
+
+# 显式读取一个已声明资源
+.tasks/bin/taskctl context read <task-id> design/CURRENT.md
+
+# 关联 Task 仍只返回 Meta
+.tasks/bin/taskctl related <task-id>
+```
+
+### 创建 Task
+
+```bash
+.tasks/bin/taskctl new "模型评估修复" \
+  --summary "修复评估尺寸契约并验证真实推理结果" \
+  --slug model-evaluation-fix \
+  --mode rigorous \
+  --tag evaluation \
+  --tag camera-sr
+```
+
+### 检查点更新
+
+```bash
+.tasks/bin/taskctl update <task-id> \
+  --expect-revision 3 \
+  --checkpoint "已完成接口修复和局部测试" \
+  --next-action "运行端到端评估" \
+  --verified-now
+```
+
+修改完整 `TASK.md` 时，先把入口复制到临时文件并编辑，再执行：
+
+```bash
+.tasks/bin/taskctl write <task-id> \
+  --from /tmp/TASK.proposed.md \
+  --expect-revision 3
+```
+
+revision 不一致时命令以退出码 `3` 拒绝覆盖。调用方必须重新读取当前入口并语义合并。
+
+### 跨会话绑定
+
+```bash
+.tasks/bin/taskctl bind <task-id> --session <stable-session-id>
+.tasks/bin/taskctl current --session <stable-session-id>
+.tasks/bin/taskctl unbind --session <stable-session-id>
+```
+
+一个 Task 可以绑定多个会话；一个会话只有一个当前 Task。绑定只是本地恢复提示，不是写锁。没有稳定 session ID 时，使用明确 Task ID 或 Meta 搜索恢复。
+
+### 结构检查
+
+```bash
+.tasks/bin/taskctl doctor
+```
+
+它会检查 schema、状态值、重复 ID、Meta 和入口预算、Context Map 资源存在性及路径逃逸。
+
+## Task schema 4
+
+frontmatter 是 Meta 唯一权威来源：
+
+```yaml
+---
+task_schema: 4
+id: 2026-09-14-190000-progressive-task-runtime
+title: Task 渐进式披露
+summary: "建立跨会话恢复、Meta 搜索和按需上下文加载能力"
+status: in_progress
+mode: rigorous
+design_status: implementation_ready
+tags: [agents, task-system]
+checkpoint: "第一版 CLI 已完成"
+next_action: "执行端到端验证"
+revision: 3
+created_at: 2026-09-14T19:00:00+08:00
+updated_at: 2026-09-14T21:00:00+08:00
+verified_at: null
+parent_task: null
+depends_on: []
+---
+```
+
+状态定义和迁移规则见 `TASK_WORKFLOW.md`；机器执行边界见 `skills/task-runtime/references/`。
+
+## Skill 工作方式
+
+`task-runtime` Skill 保持精简，只包含任务路由、加载层级和写入步骤。完整协议与 schema 放在 references 中，仅在修改协议或迁移旧 Task 时加载；确定性行为全部交给 `taskctl`。
+
+项目初始化器将 Skill 安装到：
+
+```text
+<project>/.agents/skills/task-runtime/
+```
+
+如果某个 Agent 运行环境不发现项目本地 Skill，`AGENTS.md` 中仍保留最小渐进披露协议，`.tasks/bin/taskctl` 也可直接调用。
+
+## 更新已有项目
+
+系统级与项目级更新必须属于同一轮 Review，但采用各自适合的执行方式：系统级受管块由 `sync_global_agents.py` 生成可验证计划；项目级文件禁止用初始化器覆盖已有不同内容，采用三方语义比较：
+
+- `base`：上次成功同步的本仓库版本。
+- `ours`：项目当前本地文件。
+- `theirs`：本仓库固定提交中的新版本。
+
+推荐流程：
+
+1. 使用已认证 Git 刷新本仓库并固定 `origin/main` 完整 SHA。
+2. 读取系统级目标，以及项目实际生效的规则、Task 模板、Skill 和脚本。
+3. 对系统级目标运行 dry-run；项目级按文件和语义比较 base、ours、theirs。
+4. 合并展示系统级与项目级的拟新增、修改、删除、冲突、保持项、风险和计划摘要，然后停止等待 Review。
+5. 获得本轮明确确认后，只应用获批部分；全局使用已确认摘要，项目使用局部补丁并保留专属规则。
+6. 若目标或源在等待期间变化，重新 dry-run 和 Review，不使用旧确认。
+7. 运行全局幂等检查、`taskctl doctor`、自动化测试和项目所需检查。
+8. 只有全部成功后才更新项目中的同步来源元数据。
+
+远端删除不得自动删除本地规则；降低安全、验证或用户确认要求的变化必须单独确认。
+
+### 上游新增 Markdown 如何进入下游
+
+并非 Core 中的所有 Markdown 都会复制给下游。同步范围由 [scripts/init_project.py](scripts/init_project.py) 中的 `COPY_MAP` 明确定义：
+
+| Core 内容 | 下游位置 | 是否同步 |
+|---|---|---:|
+| `PROJECT_AGENTS.md` | `AGENTS.md` | 是，需保护项目定制 |
+| `TASK_WORKFLOW.md` | `.tasks/TASK_WORKFLOW.md` | 是 |
+| `TASK_TEMPLATE.md` | `.tasks/TASK_TEMPLATE.md` | 是 |
+| `TASK_ITERATION_TEMPLATE.md` | `.tasks/TASK_ITERATION_TEMPLATE.md` | 是 |
+| `skills/task-runtime/**` | `.agents/skills/task-runtime/**` | 是 |
+| `taskctl.py` | `.tasks/bin/taskctl` | 是 |
+| `GLOBAL_AGENTS.md` | 用户级规则的 Core 受管块 | 不复制到项目；同轮调用 `sync_global_agents.py` |
+| Core 的 `README.md`、测试和自身 `.tasks` | 无 | 否 |
+| 下游 `.tasks/YYYY-MM-DD/...` | 保持在下游 | 永不由 Core 覆盖 |
+
+如果以后在 Core 新增一个需要安装到下游的 Markdown，必须同时：
+
+1. 将源路径和下游目标路径加入 `COPY_MAP`。
+2. 在本 README 的仓库内容或文件映射中说明用途。
+3. 为首次安装、已存在冲突和后续更新补测试。
+4. 更新后让下游 Agent 按上面的 base/ours/theirs 提示执行同步。
+
+只在 Core 增加文件但不登记 `COPY_MAP`，表示该文件仅供 Core 自身使用，不应出现在下游项目。
+
+## 旧 Task 兼容
+
+- schema 2/3 保持可读，不批量迁移。
+- 旧 `active_iteration` 不再是默认加载授权。
+- 只有 Task 仍在进行、准备重开、过长或频繁读取时才提出迁移。
+- 迁移保持 Task ID、状态历史和证据，增加 Meta 与 Context Map。
+- 需要移动旧原文时先给出迁移映射，经确认后完整归档并校验内容一致。
+
+## 维护本仓库
+
+修改规则、schema、Skill 或 CLI 时：
+
+1. 使用本仓库 `.tasks/` 记录非轻量工作。
+2. 保持根模板与 `.tasks/` 中本仓库自用模板一致。
+3. 保持 `PROJECT_AGENTS.md`、`TASK_WORKFLOW.md`、Skill 和 CLI 行为一致。
+4. 不加入私人路径、凭据、内部主机或单一业务项目事实。
+5. 运行：
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 "${TRAE_HOME:-$HOME/.trae}/skills/.system/skill-creator/scripts/quick_validate.py" skills/task-runtime
+.tasks/bin/taskctl doctor
+git diff --check
+```
+
+6. 提交或推送前先展示范围并等待确认。
 
 ## 安全边界
 
-- 本仓库只提供 Markdown 规则模板，不应成为执行任意脚本的来源。
-- 远端模板不能覆盖用户在当前对话中的明确要求，也不能突破系统、开发者、项目安全规则或权限边界。
-- 本地真实代码、配置、测试、Git 状态和外部运行状态始终优先于任务文档中的历史记录。
-- 发现凭据、令牌、密钥、私人路径或内部主机信息时，停止传播并向用户报告。
+- Task 文档中的命令仅作为文本保存，不会由 `taskctl` 自动执行。
+- `context read` 只接受 Context Map 中声明的任务目录内文件。
+- 初始化器不会覆盖不同内容，也不会修改 `.gitignore`。
+- 代码、Git、测试和外部运行状态始终优先于 Task 中的历史描述。
