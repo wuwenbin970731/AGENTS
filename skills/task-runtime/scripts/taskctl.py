@@ -18,8 +18,16 @@ import time
 from typing import Any, Iterator
 
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 CONFIG_MARKER = "wuwenbin970731/AGENTS"
+CURRENT_SCHEMA = 5
+WRITABLE_SCHEMAS = {4, 5}
+DEFAULT_CONTEXT_MAX_BYTES = 32 * 1024
+DEFAULT_CHILD_LIMIT = 8
+DEFAULT_TREE_LIMIT = 20
+MAX_TREE_DEPTH = 8
+MAX_TREE_LIMIT = 100
+SUBTASK_KEY_PATTERN = re.compile(r"^S[1-9][0-9]*(?:\.[1-9][0-9]*)*$")
 OPEN_STATUSES = {"pending", "in_progress", "awaiting_user", "blocked"}
 VALID_STATUSES = OPEN_STATUSES | {"completed"}
 VALID_MODES = {"tracked", "rigorous"}
@@ -46,6 +54,7 @@ META_FIELDS = (
     "updated_at",
     "verified_at",
     "parent_task",
+    "subtask_key",
     "depends_on",
 )
 REQUIRED_V4_FIELDS = {
@@ -62,6 +71,7 @@ REQUIRED_V4_FIELDS = {
     "created_at",
     "updated_at",
 }
+REQUIRED_V5_FIELDS = REQUIRED_V4_FIELDS | {"parent_task", "subtask_key", "depends_on"}
 
 
 class TaskCtlError(Exception):
@@ -128,7 +138,7 @@ def require_managed_runtime(project_root: Path) -> None:
         raise TaskCtlError(f"invalid task runtime config: {config}") from error
     if data.get("managed_by") != CONFIG_MARKER:
         raise TaskCtlError("the project's .tasks directory is not managed by this task runtime")
-    if data.get("task_schema") != 4:
+    if data.get("task_schema") != CURRENT_SCHEMA:
         raise TaskCtlError("unsupported task schema in .tasks/config.json")
 
 
@@ -291,7 +301,7 @@ def emit(value: Any, output_format: str = "json") -> None:
         for row in rows:
             print(row.get("path", "") if isinstance(row, dict) else ("" if row is None else row))
         return
-    columns = ["id", "status", "title", "checkpoint", "path"]
+    columns = ["subtask_key", "id", "status", "title", "checkpoint", "path"]
     print("\t".join(columns))
     for row in rows:
         if row is None:
@@ -306,13 +316,14 @@ def search_score(meta: dict[str, Any], query: str) -> int:
     terms = [term for term in re.split(r"[\s,;:/_-]+", normalized) if term]
     fields = {
         "id": str(meta.get("id") or "").casefold(),
+        "subtask_key": str(meta.get("subtask_key") or "").casefold(),
         "title": str(meta.get("title") or "").casefold(),
         "summary": str(meta.get("summary") or "").casefold(),
         "tags": " ".join(str(item) for item in (meta.get("tags") or [])).casefold(),
         "checkpoint": str(meta.get("checkpoint") or "").casefold(),
     }
     score = 0
-    for field, weight in (("id", 8), ("title", 7), ("tags", 5), ("summary", 4), ("checkpoint", 2)):
+    for field, weight in (("id", 8), ("subtask_key", 8), ("title", 7), ("tags", 5), ("summary", 4), ("checkpoint", 2)):
         if normalized in fields[field]:
             score += weight * 3
         score += weight * sum(1 for term in terms if term in fields[field])
@@ -352,6 +363,16 @@ def checked_resource(task_path: Path, resource: str, listed: set[str]) -> Path:
     task_dir = task_path.parent.resolve()
     if not candidate.is_relative_to(task_dir):
         raise TaskCtlError("resource path escapes the task directory")
+    if candidate == task_dir:
+        raise TaskCtlError("resource path must identify a file inside the task directory")
+    relative_parts = candidate.relative_to(task_dir).parts
+    if "subtasks" in relative_parts:
+        raise TaskCtlError("resource path crosses a descendant task boundary")
+    cursor = candidate.parent
+    while cursor != task_dir:
+        if (cursor / "TASK.md").is_file():
+            raise TaskCtlError("resource path crosses a descendant task boundary")
+        cursor = cursor.parent
     if not candidate.is_file():
         raise TaskCtlError(f"resource does not exist: {resource}")
     return candidate
@@ -364,12 +385,73 @@ def safe_slug(value: str) -> str:
     return slug[:64].rstrip("-")
 
 
-def task_document(args: argparse.Namespace, task_id: str, timestamp: str) -> str:
+def canonical_subtask_key(value: str) -> str:
+    key = value.strip().upper()
+    if not SUBTASK_KEY_PATTERN.fullmatch(key):
+        raise TaskCtlError("--subtask-key must use S1 or hierarchical forms such as S1.2")
+    return key
+
+
+def subtask_sort_key(meta: dict[str, Any]) -> tuple[tuple[int, ...], str]:
+    raw = meta.get("subtask_key")
+    if isinstance(raw, str) and SUBTASK_KEY_PATTERN.fullmatch(raw):
+        return tuple(int(part) for part in raw[1:].split(".")), str(meta.get("id") or "")
+    return (sys.maxsize,), str(meta.get("id") or "")
+
+
+def direct_children(
+    tasks: list[tuple[Path, dict[str, Any]]], parent_id: str
+) -> list[tuple[Path, dict[str, Any]]]:
+    children = [item for item in tasks if item[1].get("parent_task") == parent_id]
+    return sorted(children, key=lambda item: subtask_sort_key(item[1]))
+
+
+def validate_child_key(parent: dict[str, Any], key: str) -> None:
+    parent_key = parent.get("subtask_key")
+    if isinstance(parent_key, str) and parent_key:
+        expected = re.compile(rf"^{re.escape(parent_key)}\.[1-9][0-9]*$")
+        if not expected.fullmatch(key):
+            raise TaskCtlError(f"subtask key under {parent_key} must be a direct child such as {parent_key}.1")
+    elif not parent.get("parent_task"):
+        if not re.fullmatch(r"S[1-9][0-9]*", key):
+            raise TaskCtlError("a direct child of a root task must use S1, S2, and so on")
+
+
+def next_child_key(
+    parent: dict[str, Any], children: list[tuple[Path, dict[str, Any]]]
+) -> str:
+    parent_key = parent.get("subtask_key")
+    if isinstance(parent_key, str) and parent_key:
+        pattern = re.compile(rf"^{re.escape(parent_key)}\.([1-9][0-9]*)$")
+        prefix = f"{parent_key}."
+    elif not parent.get("parent_task"):
+        pattern = re.compile(r"^S([1-9][0-9]*)$")
+        prefix = "S"
+    else:
+        raise TaskCtlError(
+            "a legacy nested parent without subtask_key requires an explicit --subtask-key"
+        )
+    used = []
+    for _, meta in children:
+        raw = meta.get("subtask_key")
+        match = pattern.fullmatch(str(raw or ""))
+        if match:
+            used.append(int(match.group(1)))
+    return f"{prefix}{max(used, default=0) + 1}"
+
+
+def task_document(
+    args: argparse.Namespace,
+    task_id: str,
+    timestamp: str,
+    parent_task: str | None,
+    subtask_key: str | None,
+) -> str:
     tags = args.tag or []
     dependencies = args.depends_on or []
     design_status = "draft" if args.mode == "rigorous" else "not_required"
     return f"""---
-task_schema: 4
+task_schema: 5
 id: {yaml_scalar(task_id)}
 title: {yaml_scalar(args.title)}
 summary: {yaml_scalar(args.summary)}
@@ -383,7 +465,8 @@ revision: 1
 created_at: {timestamp}
 updated_at: {timestamp}
 verified_at: null
-parent_task: {yaml_scalar(args.parent)}
+parent_task: {yaml_scalar(parent_task)}
+subtask_key: {yaml_scalar(subtask_key)}
 depends_on: {yaml_scalar(dependencies)}
 ---
 
@@ -461,10 +544,8 @@ def require_revision(meta: dict[str, Any], expected: int) -> None:
         raise TaskCtlError(f"revision conflict: expected {expected}, current revision is {actual}", 3)
 
 
-def validate_v4_meta(meta: dict[str, Any]) -> list[str]:
-    errors = [f"missing field: {field}" for field in sorted(REQUIRED_V4_FIELDS - meta.keys())]
-    if meta.get("task_schema") != 4:
-        errors.append("task_schema must be 4")
+def validate_common_meta(meta: dict[str, Any], required: set[str]) -> list[str]:
+    errors = [f"missing field: {field}" for field in sorted(required - meta.keys())]
     if meta.get("status") not in VALID_STATUSES:
         errors.append("invalid status")
     if meta.get("mode") not in VALID_MODES:
@@ -484,6 +565,38 @@ def validate_v4_meta(meta: dict[str, Any]) -> list[str]:
     if not isinstance(meta.get("depends_on", []), list):
         errors.append("depends_on must be an inline list")
     return errors
+
+
+def validate_v4_meta(meta: dict[str, Any]) -> list[str]:
+    errors = validate_common_meta(meta, REQUIRED_V4_FIELDS)
+    if meta.get("task_schema") != 4:
+        errors.append("task_schema must be 4")
+    return errors
+
+
+def validate_v5_meta(meta: dict[str, Any]) -> list[str]:
+    errors = validate_common_meta(meta, REQUIRED_V5_FIELDS)
+    if meta.get("task_schema") != 5:
+        errors.append("task_schema must be 5")
+    parent = meta.get("parent_task")
+    key = meta.get("subtask_key")
+    if parent is not None and (not isinstance(parent, str) or not parent.strip()):
+        errors.append("parent_task must be null or a non-empty string")
+    if parent is None and key is not None:
+        errors.append("root task subtask_key must be null")
+    if parent is not None:
+        if not isinstance(key, str) or not SUBTASK_KEY_PATTERN.fullmatch(key):
+            errors.append("child task subtask_key must use S1 or a hierarchical form such as S1.2")
+    return errors
+
+
+def validate_writable_meta(meta: dict[str, Any]) -> list[str]:
+    schema = meta.get("task_schema")
+    if schema == 4:
+        return validate_v4_meta(meta)
+    if schema == 5:
+        return validate_v5_meta(meta)
+    return [f"task schema {schema} is read-only; migrate it before writing"]
 
 
 def refresh_session(project_root: Path, session: str | None, task_id: str, revision: int) -> None:
@@ -514,6 +627,74 @@ def safe_state_key(value: str) -> str:
     readable = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._-")[:48] or "state"
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
     return f"{readable}-{digest}"
+
+
+def estimated_tokens(size_bytes: int) -> int:
+    return (size_bytes + 2) // 3
+
+
+def bounded_limit(value: int, maximum: int = MAX_TREE_LIMIT) -> int:
+    if value < 0:
+        raise TaskCtlError("--limit must be zero or greater")
+    return min(value, maximum)
+
+
+def compact_tree_meta(
+    meta: dict[str, Any], *, child_count: int, tree_depth: int
+) -> dict[str, Any]:
+    return {
+        "id": meta.get("id"),
+        "subtask_key": meta.get("subtask_key"),
+        "title": meta.get("title"),
+        "status": meta.get("status"),
+        "summary": meta.get("summary"),
+        "checkpoint": meta.get("checkpoint"),
+        "parent_task": meta.get("parent_task"),
+        "child_count": child_count,
+        "tree_depth": tree_depth,
+        "path": meta.get("path"),
+    }
+
+
+def emit_bounded_rows(
+    rows: list[dict[str, Any]], total: int, output_format: str, **metadata: Any
+) -> None:
+    if output_format == "json":
+        emit(
+            {
+                **metadata,
+                "returned": len(rows),
+                "total": total,
+                "remaining_count": max(total - len(rows), 0),
+                "items": rows,
+            },
+            output_format,
+        )
+    else:
+        emit(rows, output_format)
+
+
+def task_graph(
+    project_root: Path,
+) -> tuple[
+    list[tuple[Path, dict[str, Any]]],
+    dict[str, tuple[Path, dict[str, Any]]],
+    dict[str, list[tuple[Path, dict[str, Any]]]],
+]:
+    tasks = all_tasks(project_root)
+    by_id = {
+        str(meta.get("id")): (path, meta)
+        for path, meta in tasks
+        if isinstance(meta.get("id"), str) and meta.get("id")
+    }
+    children: dict[str, list[tuple[Path, dict[str, Any]]]] = {}
+    for item in tasks:
+        parent = item[1].get("parent_task")
+        if isinstance(parent, str) and parent:
+            children.setdefault(parent, []).append(item)
+    for values in children.values():
+        values.sort(key=lambda item: subtask_sort_key(item[1]))
+    return tasks, by_id, children
 
 
 def cmd_search(args: argparse.Namespace) -> None:
@@ -549,22 +730,82 @@ def cmd_new(args: argparse.Namespace) -> None:
     root.mkdir(parents=True, exist_ok=True)
     timestamp = dt.datetime.now().astimezone().replace(microsecond=0)
     slug = safe_slug(args.slug or args.title)
-    task_id = f"{timestamp:%Y-%m-%d-%H%M%S}-{slug}"
-    if any(meta.get("id") == task_id for _, meta in all_tasks(args.project_root)):
-        raise TaskCtlError(f"task already exists: {task_id}")
-    directory = root / f"{timestamp:%Y-%m-%d}" / task_id
-    try:
-        directory.mkdir(parents=True, exist_ok=False)
-    except FileExistsError as error:
-        raise TaskCtlError(f"task directory already exists: {directory.relative_to(args.project_root)}") from error
-    path = directory / "TASK.md"
-    atomic_write(path, task_document(args, task_id, timestamp.isoformat()))
+    if args.subtask_key and not args.parent:
+        raise TaskCtlError("--subtask-key requires --parent")
+
+    parent_path: Path | None = None
+    parent_meta: dict[str, Any] | None = None
+    if args.parent:
+        parent_path, parent_meta = resolve_task(args.project_root, args.parent)
+
+    def create(parent_key: str | None) -> Path:
+        key_component = f"-{parent_key.casefold()}" if parent_key else ""
+        task_id = f"{timestamp:%Y-%m-%d-%H%M%S}{key_component}-{slug}"
+        if any(meta.get("id") == task_id for _, meta in all_tasks(args.project_root)):
+            raise TaskCtlError(f"task already exists: {task_id}")
+        if parent_path is None:
+            directory = root / f"{timestamp:%Y-%m-%d}" / task_id
+        else:
+            directory = parent_path.parent / "subtasks" / task_id
+        try:
+            directory.mkdir(parents=True, exist_ok=False)
+        except FileExistsError as error:
+            raise TaskCtlError(
+                f"task directory already exists: {directory.relative_to(args.project_root)}"
+            ) from error
+        path = directory / "TASK.md"
+        atomic_write(
+            path,
+            task_document(
+                args,
+                task_id,
+                timestamp.isoformat(),
+                str(parent_meta["id"]) if parent_meta else None,
+                parent_key,
+            ),
+        )
+        return path
+
+    if parent_meta is None:
+        path = create(None)
+    else:
+        parent_id = str(parent_meta["id"])
+        with task_lock(args.project_root, parent_id):
+            tasks = all_tasks(args.project_root)
+            children = direct_children(tasks, parent_id)
+            key = canonical_subtask_key(args.subtask_key) if args.subtask_key else next_child_key(parent_meta, children)
+            validate_child_key(parent_meta, key)
+            if any(meta.get("subtask_key") == key for _, meta in children):
+                raise TaskCtlError(f"subtask key already exists under {parent_id}: {key}")
+            path = create(key)
     emit(meta_for(path, args.project_root), args.format)
 
 
 def cmd_context_list(args: argparse.Namespace) -> None:
     path, _ = resolve_task(args.project_root, args.task)
-    emit(parse_context_map(path.read_text(encoding="utf-8")), args.format)
+    rows = parse_context_map(path.read_text(encoding="utf-8"))
+    listed = {row["resource"] for row in rows}
+    for row in rows:
+        try:
+            target = checked_resource(path, row["resource"], listed)
+            size = target.stat().st_size
+            row.update(
+                {
+                    "available": True,
+                    "size_bytes": size,
+                    "estimated_tokens": estimated_tokens(size),
+                }
+            )
+        except (OSError, TaskCtlError) as error:
+            row.update(
+                {
+                    "available": False,
+                    "size_bytes": None,
+                    "estimated_tokens": None,
+                    "error": str(error),
+                }
+            )
+    emit(rows, args.format)
 
 
 def cmd_context_read(args: argparse.Namespace) -> None:
@@ -572,7 +813,119 @@ def cmd_context_read(args: argparse.Namespace) -> None:
     resources = parse_context_map(path.read_text(encoding="utf-8"))
     listed = {row["resource"] for row in resources}
     target = checked_resource(path, args.resource, listed)
-    sys.stdout.write(target.read_text(encoding="utf-8"))
+    if args.max_tokens is not None:
+        if args.max_tokens <= 0:
+            raise TaskCtlError("--max-tokens must be positive")
+        max_bytes = args.max_tokens * 3
+    else:
+        max_bytes = args.max_bytes
+    if max_bytes <= 0:
+        raise TaskCtlError("--max-bytes must be positive")
+    size = target.stat().st_size
+    if size > max_bytes:
+        raise TaskCtlError(
+            f"resource exceeds read budget: {size} bytes, approximately "
+            f"{estimated_tokens(size)} tokens; budget is {max_bytes} bytes"
+        )
+    content = target.read_text(encoding="utf-8")
+    actual_size = len(content.encode("utf-8"))
+    if actual_size > max_bytes:
+        raise TaskCtlError(
+            f"resource changed and exceeds read budget: {actual_size} bytes, approximately "
+            f"{estimated_tokens(actual_size)} tokens; budget is {max_bytes} bytes"
+        )
+    sys.stdout.write(content)
+
+
+def cmd_children(args: argparse.Namespace) -> None:
+    _, selected = resolve_task(args.project_root, args.task)
+    tasks, _, children = task_graph(args.project_root)
+    selected_id = str(selected["id"])
+    direct = children.get(selected_id, [])
+    counts = {
+        str(meta.get("id")): len(children.get(str(meta.get("id")), []))
+        for _, meta in tasks
+    }
+    limit = bounded_limit(args.limit)
+    rows = [
+        compact_tree_meta(meta, child_count=counts.get(str(meta.get("id")), 0), tree_depth=1)
+        for _, meta in direct[:limit]
+    ]
+    emit_bounded_rows(rows, len(direct), args.format, parent_task=selected_id)
+
+
+def cmd_lineage(args: argparse.Namespace) -> None:
+    _, selected = resolve_task(args.project_root, args.task)
+    tasks, by_id, children = task_graph(args.project_root)
+    chain: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    current = selected
+    while True:
+        task_id = str(current.get("id"))
+        if task_id in seen:
+            raise TaskCtlError(f"parent cycle detected at {task_id}")
+        seen.add(task_id)
+        chain.append(current)
+        parent = current.get("parent_task")
+        if not parent:
+            break
+        parent_item = by_id.get(str(parent))
+        if parent_item is None:
+            raise TaskCtlError(f"parent task not found: {parent}")
+        current = parent_item[1]
+    chain.reverse()
+    counts = {
+        str(meta.get("id")): len(children.get(str(meta.get("id")), []))
+        for _, meta in tasks
+    }
+    all_rows = [
+        compact_tree_meta(meta, child_count=counts.get(str(meta.get("id")), 0), tree_depth=depth)
+        for depth, meta in enumerate(chain)
+    ]
+    limit = bounded_limit(args.limit)
+    if len(all_rows) <= limit:
+        rows = all_rows
+    elif limit == 0:
+        rows = []
+    elif limit == 1:
+        rows = [all_rows[-1]]
+    else:
+        rows = [all_rows[0], *all_rows[-(limit - 1) :]]
+    emit_bounded_rows(rows, len(all_rows), args.format, task=str(selected["id"]))
+
+
+def cmd_tree(args: argparse.Namespace) -> None:
+    _, selected = resolve_task(args.project_root, args.task)
+    if args.depth < 0 or args.depth > MAX_TREE_DEPTH:
+        raise TaskCtlError(f"--depth must be between 0 and {MAX_TREE_DEPTH}")
+    tasks, _, children = task_graph(args.project_root)
+    counts = {
+        str(meta.get("id")): len(children.get(str(meta.get("id")), []))
+        for _, meta in tasks
+    }
+    rows: list[dict[str, Any]] = []
+    active: set[str] = set()
+
+    def visit(meta: dict[str, Any], depth: int) -> None:
+        task_id = str(meta.get("id"))
+        if task_id in active:
+            raise TaskCtlError(f"parent cycle detected at {task_id}")
+        rows.append(
+            compact_tree_meta(meta, child_count=counts.get(task_id, 0), tree_depth=depth)
+        )
+        if depth >= args.depth:
+            return
+        active.add(task_id)
+        for _, child in children.get(task_id, []):
+            visit(child, depth + 1)
+        active.remove(task_id)
+
+    visit(selected, 0)
+    total = len(rows)
+    limit = bounded_limit(args.limit)
+    emit_bounded_rows(
+        rows[:limit], total, args.format, root_task=str(selected["id"]), max_depth=args.depth
+    )
 
 
 def cmd_related(args: argparse.Namespace) -> None:
@@ -587,12 +940,13 @@ def cmd_related(args: argparse.Namespace) -> None:
         reverse = selected_id == meta.get("parent_task") or selected_id in (meta.get("depends_on") or [])
         if task_id in referenced or reverse:
             rows.append(meta)
-    emit(rows, args.format)
+    rows.sort(key=subtask_sort_key)
+    emit(rows[: bounded_limit(args.limit)], args.format)
 
 
 def cmd_update(args: argparse.Namespace) -> None:
-    path, _ = resolve_task(args.project_root, args.task)
-    with task_lock(args.project_root, path.parent.name):
+    path, original_meta = resolve_task(args.project_root, args.task)
+    with task_lock(args.project_root, str(original_meta.get("id"))):
         text = path.read_text(encoding="utf-8")
         current, _, _ = split_frontmatter(text)
         require_revision(current, args.expect_revision)
@@ -608,7 +962,7 @@ def cmd_update(args: argparse.Namespace) -> None:
             updates["verified_at"] = now_iso()
         proposed = update_frontmatter(text, updates)
         proposed_meta, _, proposed_end = split_frontmatter(proposed)
-        validation_errors = validate_v4_meta(proposed_meta)
+        validation_errors = validate_writable_meta(proposed_meta)
         frontmatter_bytes = len("".join(proposed.splitlines(keepends=True)[: proposed_end + 1]).encode("utf-8"))
         if frontmatter_bytes > 1024:
             validation_errors.append(f"frontmatter exceeds 1 KiB: {frontmatter_bytes} bytes")
@@ -626,7 +980,13 @@ def cmd_write(args: argparse.Namespace) -> None:
     proposed_meta, _, _ = split_frontmatter(proposed)
     if proposed_meta.get("id") != original_meta.get("id"):
         raise TaskCtlError("proposed TASK.md changes the task id")
-    validation_errors = validate_v4_meta(proposed_meta)
+    if proposed_meta.get("task_schema") != original_meta.get("task_schema"):
+        raise TaskCtlError("proposed TASK.md changes the task schema; use an explicit migration")
+    if original_meta.get("task_schema") == 5:
+        for field in ("parent_task", "subtask_key"):
+            if proposed_meta.get(field) != original_meta.get(field):
+                raise TaskCtlError(f"proposed TASK.md changes immutable field: {field}")
+    validation_errors = validate_writable_meta(proposed_meta)
     if validation_errors:
         raise TaskCtlError("invalid proposed TASK.md: " + "; ".join(validation_errors))
     _, _, proposed_end = split_frontmatter(proposed)
@@ -695,63 +1055,138 @@ def cmd_unbind(args: argparse.Namespace) -> None:
 def cmd_doctor(args: argparse.Namespace) -> None:
     issues: list[dict[str, str]] = []
     seen: dict[str, str] = {}
+    records: list[tuple[Path, dict[str, Any]]] = []
     root = task_root(args.project_root)
+
+    def issue(level: str, path: Path | str, message: str) -> None:
+        rendered = str(path.relative_to(args.project_root)) if isinstance(path, Path) else path
+        issues.append({"level": level, "path": rendered, "message": message})
+
     config = root / "config.json"
     if not config.exists():
-        issues.append({"level": "warning", "path": str(config.relative_to(args.project_root)), "message": "missing runtime config"})
+        issue("warning", config, "missing runtime config")
     else:
         try:
             config_data = json.loads(config.read_text(encoding="utf-8"))
             if config_data.get("managed_by") != CONFIG_MARKER:
-                issues.append({"level": "error", "path": str(config.relative_to(args.project_root)), "message": "unexpected managed_by marker"})
-            if config_data.get("task_schema") != 4:
-                issues.append({"level": "error", "path": str(config.relative_to(args.project_root)), "message": "config task_schema must be 4"})
+                issue("error", config, "unexpected managed_by marker")
+            if config_data.get("task_schema") != CURRENT_SCHEMA:
+                issue("error", config, f"config task_schema must be {CURRENT_SCHEMA}")
             if config_data.get("runtime_version") != VERSION:
-                issues.append({"level": "warning", "path": str(config.relative_to(args.project_root)), "message": f"runtime_version differs from taskctl {VERSION}"})
+                issue("warning", config, f"runtime_version differs from taskctl {VERSION}")
         except (OSError, json.JSONDecodeError) as error:
-            issues.append({"level": "error", "path": str(config.relative_to(args.project_root)), "message": f"invalid runtime config: {error}"})
+            issue("error", config, f"invalid runtime config: {error}")
     for relative in ("TASK_WORKFLOW.md", "TASK_TEMPLATE.md", "TASK_ITERATION_TEMPLATE.md", "bin/taskctl"):
         expected = root / relative
         if not expected.is_file():
-            issues.append({"level": "warning", "path": str(expected.relative_to(args.project_root)), "message": "missing runtime file"})
+            issue("warning", expected, "missing runtime file")
     installed_cli = root / "bin/taskctl"
     if installed_cli.is_file() and not os.access(installed_cli, os.X_OK):
-        issues.append({"level": "error", "path": str(installed_cli.relative_to(args.project_root)), "message": "taskctl is not executable"})
+        issue("error", installed_cli, "taskctl is not executable")
     paths = task_paths(args.project_root)
     for path in paths:
-        relative = str(path.relative_to(args.project_root))
         try:
             text = path.read_text(encoding="utf-8")
             meta, _, end = split_frontmatter(text)
         except (OSError, UnicodeError, TaskCtlError) as error:
-            issues.append({"level": "error", "path": relative, "message": str(error)})
+            issue("error", path, str(error))
             continue
+        records.append((path, meta))
         task_id = str(meta.get("id") or "")
         if task_id in seen:
-            issues.append({"level": "error", "path": relative, "message": f"duplicate id also used by {seen[task_id]}"})
+            issue("error", path, f"duplicate id also used by {seen[task_id]}")
         elif task_id:
-            seen[task_id] = relative
+            seen[task_id] = str(path.relative_to(args.project_root))
         schema = meta.get("task_schema")
-        if schema == 4:
-            for message in validate_v4_meta(meta):
-                issues.append({"level": "error", "path": relative, "message": message})
+        if schema in WRITABLE_SCHEMAS:
+            for message in validate_writable_meta(meta):
+                issue("error", path, message)
         else:
-            issues.append({"level": "warning", "path": relative, "message": f"legacy task schema: {schema}"})
-        if schema != 4 and meta.get("status") not in VALID_STATUSES:
-            issues.append({"level": "error", "path": relative, "message": "invalid status"})
+            issue("warning", path, f"legacy task schema: {schema}")
+        if schema not in WRITABLE_SCHEMAS and meta.get("status") not in VALID_STATUSES:
+            issue("error", path, "invalid status")
         frontmatter_bytes = len("".join(text.splitlines(keepends=True)[: end + 1]).encode("utf-8"))
         if frontmatter_bytes > 1024:
-            issues.append({"level": "warning", "path": relative, "message": f"frontmatter exceeds 1 KiB: {frontmatter_bytes} bytes"})
+            issue("warning", path, f"frontmatter exceeds 1 KiB: {frontmatter_bytes} bytes")
         line_count = len(text.splitlines())
         if line_count > 240:
-            issues.append({"level": "error", "path": relative, "message": f"TASK.md exceeds 240 lines: {line_count}"})
+            issue("error", path, f"TASK.md exceeds 240 lines: {line_count}")
         elif line_count > 160:
-            issues.append({"level": "warning", "path": relative, "message": f"TASK.md exceeds 160 lines: {line_count}"})
+            issue("warning", path, f"TASK.md exceeds 160 lines: {line_count}")
+        relative_length = len(str(path.relative_to(args.project_root)))
+        if relative_length > 240:
+            issue("warning", path, f"task path exceeds 240 characters: {relative_length}")
         for row in parse_context_map(text):
             try:
                 checked_resource(path, row["resource"], {row["resource"]})
             except TaskCtlError as error:
-                issues.append({"level": "error", "path": relative, "message": str(error)})
+                issue("error", path, str(error))
+
+    by_id = {
+        str(meta.get("id")): (path, meta)
+        for path, meta in records
+        if isinstance(meta.get("id"), str) and meta.get("id") and str(meta.get("id")) in seen
+    }
+    sibling_keys: dict[tuple[str, str], Path] = {}
+    for path, meta in records:
+        task_id = str(meta.get("id") or "")
+        parent_id = meta.get("parent_task")
+        if not isinstance(parent_id, str) or not parent_id:
+            if meta.get("task_schema") == 5 and "subtasks" in path.relative_to(root).parts:
+                issue("error", path, "root schema 5 task cannot live below a subtasks directory")
+            continue
+        parent_item = by_id.get(parent_id)
+        if parent_item is None:
+            level = "error" if meta.get("task_schema") == 5 else "warning"
+            issue(level, path, f"parent task not found: {parent_id}")
+            continue
+        parent_path, parent_meta = parent_item
+        if meta.get("task_schema") != 5:
+            continue
+        key = str(meta.get("subtask_key") or "")
+        duplicate = sibling_keys.get((parent_id, key))
+        if duplicate is not None:
+            issue("error", path, f"duplicate subtask_key {key} also used by {duplicate.relative_to(args.project_root)}")
+        else:
+            sibling_keys[(parent_id, key)] = path
+        parent_key = parent_meta.get("subtask_key")
+        if isinstance(parent_key, str) and parent_key:
+            if not re.fullmatch(rf"{re.escape(parent_key)}\.[1-9][0-9]*", key):
+                issue("error", path, f"subtask_key must be a direct child of {parent_key}")
+        elif not parent_meta.get("parent_task"):
+            if not re.fullmatch(r"S[1-9][0-9]*", key):
+                issue("error", path, "direct child of a root task must use S1, S2, and so on")
+        expected = parent_path.parent / "subtasks" / task_id / "TASK.md"
+        if path.resolve() != expected.resolve():
+            issue(
+                "error",
+                path,
+                f"schema 5 child path must be {expected.relative_to(args.project_root)}",
+            )
+
+    reported_cycles: set[tuple[str, ...]] = set()
+    for path, meta in records:
+        task_id = str(meta.get("id") or "")
+        chain: list[str] = []
+        positions: dict[str, int] = {}
+        current = task_id
+        while current in by_id:
+            if current in positions:
+                cycle = tuple(chain[positions[current] :])
+                signature = tuple(sorted(cycle))
+                if signature not in reported_cycles:
+                    reported_cycles.add(signature)
+                    issue("error", path, "parent cycle detected: " + " -> ".join((*cycle, cycle[0])))
+                break
+            positions[current] = len(chain)
+            chain.append(current)
+            parent = by_id[current][1].get("parent_task")
+            if not isinstance(parent, str) or not parent:
+                break
+            current = parent
+        depth = max(len(chain) - 1, 0)
+        if depth > 5:
+            issue("warning", path, f"task nesting depth is {depth}; consider splitting the hierarchy")
     errors = sum(issue["level"] == "error" for issue in issues)
     emit({"tasks": len(paths), "errors": errors, "warnings": len(issues) - errors, "issues": issues}, args.format)
     if errors:
@@ -782,7 +1217,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_format(show)
     show.set_defaults(func=cmd_show)
 
-    new = subparsers.add_parser("new", help="create a schema 4 task")
+    new = subparsers.add_parser("new", help="create a schema 5 task")
     new.add_argument("title")
     new.add_argument("--summary", required=True)
     new.add_argument("--slug")
@@ -790,14 +1225,35 @@ def build_parser() -> argparse.ArgumentParser:
     new.add_argument("--status", choices=("pending", "in_progress"), default="in_progress")
     new.add_argument("--tag", action="append")
     new.add_argument("--parent")
+    new.add_argument("--subtask-key", help="stable hierarchy key such as S1 or S1.2")
     new.add_argument("--depends-on", action="append")
     add_format(new)
     new.set_defaults(func=cmd_new)
 
     related = subparsers.add_parser("related", help="show metadata for directly related tasks")
     related.add_argument("task")
+    related.add_argument("--limit", type=int, default=DEFAULT_CHILD_LIMIT)
     add_format(related)
     related.set_defaults(func=cmd_related)
+
+    children = subparsers.add_parser("children", help="show bounded L0 metadata for direct child tasks")
+    children.add_argument("task")
+    children.add_argument("--limit", type=int, default=DEFAULT_CHILD_LIMIT)
+    add_format(children)
+    children.set_defaults(func=cmd_children)
+
+    tree = subparsers.add_parser("tree", help="show a bounded L0 task subtree")
+    tree.add_argument("task")
+    tree.add_argument("--depth", type=int, default=1)
+    tree.add_argument("--limit", type=int, default=DEFAULT_TREE_LIMIT)
+    add_format(tree)
+    tree.set_defaults(func=cmd_tree)
+
+    lineage = subparsers.add_parser("lineage", help="show bounded L0 ancestors and the selected task")
+    lineage.add_argument("task")
+    lineage.add_argument("--limit", type=int, default=DEFAULT_TREE_LIMIT)
+    add_format(lineage)
+    lineage.set_defaults(func=cmd_lineage)
 
     context_parser = subparsers.add_parser("context", help="list or explicitly read declared resources")
     context_commands = context_parser.add_subparsers(dest="context_command", required=True)
@@ -808,6 +1264,9 @@ def build_parser() -> argparse.ArgumentParser:
     context_read = context_commands.add_parser("read")
     context_read.add_argument("task")
     context_read.add_argument("resource")
+    budget = context_read.add_mutually_exclusive_group()
+    budget.add_argument("--max-bytes", type=int, default=DEFAULT_CONTEXT_MAX_BYTES)
+    budget.add_argument("--max-tokens", type=int)
     context_read.set_defaults(func=cmd_context_read)
 
     update = subparsers.add_parser("update", help="atomically update task checkpoint metadata")

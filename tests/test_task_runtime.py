@@ -65,6 +65,27 @@ class TaskRuntimeTest(unittest.TestCase):
         )
         return json.loads(result.stdout)
 
+    def create_child(
+        self,
+        parent: str,
+        title: str,
+        slug: str,
+        subtask_key: str | None = None,
+    ) -> dict[str, object]:
+        arguments = [
+            "new",
+            title,
+            "--summary",
+            f"Child task for {title}",
+            "--slug",
+            slug,
+            "--parent",
+            parent,
+        ]
+        if subtask_key:
+            arguments.extend(("--subtask-key", subtask_key))
+        return json.loads(self.taskctl(*arguments).stdout)
+
     def test_initializer_plans_before_apply_and_is_idempotent(self) -> None:
         preview = self.run_command(sys.executable, str(INIT), str(self.project))
         plan = json.loads(preview.stdout)
@@ -75,6 +96,10 @@ class TaskRuntimeTest(unittest.TestCase):
         self.initialize()
         self.assertTrue((self.project / ".tasks/bin/taskctl").exists())
         self.assertTrue((self.project / ".agents/skills/task-runtime/SKILL.md").exists())
+        self.assertTrue((self.project / ".agents/skills/task-runtime/references/schema-v5.md").exists())
+        runtime_config = json.loads((self.project / ".tasks/config.json").read_text(encoding="utf-8"))
+        self.assertEqual(runtime_config["task_schema"], 5)
+        self.assertEqual(runtime_config["runtime_version"], "0.2.0")
         manifest = json.loads((self.project / ".tasks/agent-core.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["schema"], 1)
         self.assertIn(".tasks/bin/taskctl", manifest["files"])
@@ -189,6 +214,201 @@ class TaskRuntimeTest(unittest.TestCase):
         rejected = self.taskctl("context", "read", str(meta["id"]), "../outside.md", check=False)
         self.assertEqual(rejected.returncode, 2)
         self.assertNotIn("OUTSIDE_SECRET", rejected.stdout + rejected.stderr)
+
+    def test_recursive_subtasks_use_hierarchical_keys_and_bounded_l0_queries(self) -> None:
+        self.initialize()
+        root = self.create_task(title="Root task", slug="root-task")
+        first = self.create_child(str(root["id"]), "Data preparation", "data-preparation")
+        second = self.create_child(str(root["id"]), "Training", "training", "S2")
+        nested = self.create_child(str(first["id"]), "Data validation", "data-validation")
+
+        duplicate = self.taskctl(
+            "new",
+            "Duplicate",
+            "--summary",
+            "Duplicate key",
+            "--slug",
+            "duplicate",
+            "--parent",
+            str(root["id"]),
+            "--subtask-key",
+            "S2",
+            check=False,
+        )
+        self.assertEqual(duplicate.returncode, 2)
+        invalid_depth = self.taskctl(
+            "new",
+            "Invalid depth",
+            "--summary",
+            "Invalid direct child key",
+            "--slug",
+            "invalid-depth",
+            "--parent",
+            str(root["id"]),
+            "--subtask-key",
+            "S1.1",
+            check=False,
+        )
+        self.assertEqual(invalid_depth.returncode, 2)
+
+        self.assertEqual(root["task_schema"], 5)
+        self.assertIsNone(root["subtask_key"])
+        self.assertEqual(first["subtask_key"], "S1")
+        self.assertEqual(second["subtask_key"], "S2")
+        self.assertEqual(nested["subtask_key"], "S1.1")
+        self.assertIn("-s1-data-preparation", str(first["id"]))
+        self.assertIn("-s1.1-data-validation", str(nested["id"]))
+
+        rekey = self.project / "rekey.md"
+        first_entry = self.project / str(first["path"])
+        rekey.write_text(
+            first_entry.read_text(encoding="utf-8").replace(
+                'subtask_key: "S1"', 'subtask_key: "S9"'
+            ),
+            encoding="utf-8",
+        )
+        immutable = self.taskctl(
+            "write",
+            str(first["id"]),
+            "--from",
+            str(rekey),
+            "--expect-revision",
+            "1",
+            check=False,
+        )
+        self.assertEqual(immutable.returncode, 2)
+        self.assertIn("immutable field: subtask_key", immutable.stderr)
+
+        root_dir = (self.project / str(root["path"])).parent
+        first_path = self.project / str(first["path"])
+        nested_path = self.project / str(nested["path"])
+        self.assertEqual(first_path.parent.parent, root_dir / "subtasks")
+        self.assertEqual(nested_path.parent.parent, first_path.parent / "subtasks")
+
+        nested_path.write_text(
+            nested_path.read_text(encoding="utf-8") + "\nNESTED_BODY_SECRET_4217\n",
+            encoding="utf-8",
+        )
+        children = json.loads(self.taskctl("children", str(root["id"])).stdout)
+        self.assertEqual(children["total"], 2)
+        self.assertEqual([row["subtask_key"] for row in children["items"]], ["S1", "S2"])
+        self.assertNotIn("NESTED_BODY_SECRET_4217", json.dumps(children))
+
+        shallow = json.loads(self.taskctl("tree", str(root["id"]), "--depth", "1").stdout)
+        self.assertEqual(shallow["total"], 3)
+        self.assertNotIn("S1.1", [row["subtask_key"] for row in shallow["items"]])
+        deep = json.loads(self.taskctl("tree", str(root["id"]), "--depth", "2").stdout)
+        self.assertEqual(deep["total"], 4)
+        self.assertEqual([row["tree_depth"] for row in deep["items"]], [0, 1, 2, 1])
+        limited = json.loads(
+            self.taskctl("tree", str(root["id"]), "--depth", "2", "--limit", "2").stdout
+        )
+        self.assertEqual(limited["returned"], 2)
+        self.assertEqual(limited["remaining_count"], 2)
+
+        lineage = json.loads(self.taskctl("lineage", str(nested["id"])).stdout)
+        self.assertEqual(
+            [row["subtask_key"] for row in lineage["items"]],
+            [None, "S1", "S1.1"],
+        )
+
+    def test_context_budget_and_descendant_task_boundary(self) -> None:
+        self.initialize()
+        root = self.create_task(title="Budget root", slug="budget-root")
+        child = self.create_child(str(root["id"]), "Budget child", "budget-child")
+        root_path = self.project / str(root["path"])
+        child_path = self.project / str(child["path"])
+        design = root_path.parent / "design/CURRENT.md"
+        design.parent.mkdir()
+        design.write_text("X" * 120, encoding="utf-8")
+        child_path.write_text(
+            child_path.read_text(encoding="utf-8") + "\nCHILD_BODY_SECRET_9832\n",
+            encoding="utf-8",
+        )
+        child_relative = child_path.relative_to(root_path.parent)
+        text = root_path.read_text(encoding="utf-8").replace(
+            "|---|---|---|\n\n## 依赖契约",
+            "|---|---|---|\n"
+            "| `design/CURRENT.md` | Current design | Implementing |\n"
+            f"| `{child_relative}` | Child entry | Never as a resource |\n\n"
+            "## 依赖契约",
+        )
+        root_path.write_text(text, encoding="utf-8")
+
+        listed = json.loads(self.taskctl("context", "list", str(root["id"])).stdout)
+        self.assertTrue(listed[0]["available"])
+        self.assertEqual(listed[0]["size_bytes"], 120)
+        self.assertEqual(listed[0]["estimated_tokens"], 40)
+        self.assertFalse(listed[1]["available"])
+        self.assertIn("descendant task boundary", listed[1]["error"])
+
+        oversized = self.taskctl(
+            "context",
+            "read",
+            str(root["id"]),
+            "design/CURRENT.md",
+            "--max-bytes",
+            "100",
+            check=False,
+        )
+        self.assertEqual(oversized.returncode, 2)
+        self.assertIn("approximately 40 tokens", oversized.stderr)
+        accepted = self.taskctl(
+            "context",
+            "read",
+            str(root["id"]),
+            "design/CURRENT.md",
+            "--max-tokens",
+            "40",
+        )
+        self.assertEqual(accepted.stdout, "X" * 120)
+        rejected_child = self.taskctl(
+            "context",
+            "read",
+            str(root["id"]),
+            str(child_relative),
+            check=False,
+        )
+        self.assertEqual(rejected_child.returncode, 2)
+        self.assertNotIn("CHILD_BODY_SECRET_9832", rejected_child.stdout + rejected_child.stderr)
+
+    def test_doctor_rejects_duplicate_keys_wrong_paths_and_parent_cycles(self) -> None:
+        self.initialize()
+        root = self.create_task(title="Doctor root", slug="doctor-root")
+        first = self.create_child(str(root["id"]), "First", "first")
+        second = self.create_child(str(root["id"]), "Second", "second")
+        second_path = self.project / str(second["path"])
+        second_path.write_text(
+            second_path.read_text(encoding="utf-8").replace(
+                'subtask_key: "S2"', 'subtask_key: "S1"'
+            ),
+            encoding="utf-8",
+        )
+
+        misplaced = self.project / ".tasks/2026-01-01/misplaced-child/TASK.md"
+        misplaced.parent.mkdir(parents=True)
+        misplaced.write_text(
+            (self.project / str(first["path"]))
+            .read_text(encoding="utf-8")
+            .replace(str(first["id"]), "2026-01-01-000000-s3-misplaced")
+            .replace('subtask_key: "S1"', 'subtask_key: "S3"'),
+            encoding="utf-8",
+        )
+        root_path = self.project / str(root["path"])
+        root_path.write_text(
+            root_path.read_text(encoding="utf-8")
+            .replace("parent_task: null", f"parent_task: {first['id']}")
+            .replace("subtask_key: null", "subtask_key: S1.1"),
+            encoding="utf-8",
+        )
+
+        result = self.taskctl("doctor", check=False)
+        self.assertEqual(result.returncode, 1)
+        report = json.loads(result.stdout)
+        messages = "\n".join(item["message"] for item in report["issues"])
+        self.assertIn("duplicate subtask_key S1", messages)
+        self.assertIn("schema 5 child path must be", messages)
+        self.assertIn("parent cycle detected", messages)
 
     def test_revision_conflict_prevents_lost_update(self) -> None:
         self.initialize()
@@ -309,6 +529,30 @@ class TaskRuntimeTest(unittest.TestCase):
         legacy = json.loads(self.taskctl("search", "legacy-task").stdout)
         self.assertEqual(legacy[0]["id"], "legacy-task")
         self.assertNotIn("active_iteration", legacy[0])
+
+    def test_schema_4_task_remains_writable_in_place(self) -> None:
+        self.initialize()
+        meta = self.create_task(title="Schema four", slug="schema-four")
+        path = self.project / str(meta["path"])
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            .replace("task_schema: 5", "task_schema: 4")
+            .replace("subtask_key: null\n", ""),
+            encoding="utf-8",
+        )
+        updated = json.loads(
+            self.taskctl(
+                "update",
+                str(meta["id"]),
+                "--expect-revision",
+                "1",
+                "--checkpoint",
+                "schema 4 updated in place",
+            ).stdout
+        )
+        self.assertEqual(updated["task_schema"], 4)
+        self.assertEqual(updated["revision"], 2)
+        self.assertEqual(updated["checkpoint"], "schema 4 updated in place")
 
     def test_full_entry_write_checks_revision(self) -> None:
         self.initialize()

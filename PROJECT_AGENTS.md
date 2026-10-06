@@ -12,7 +12,7 @@
 ## Task 路由
 
 - 按全局规则选择 `light`、`tracked` 或 `rigorous`。`light` 请求不扫描 `.tasks/`。
-- `tracked` 和 `rigorous` Task 位于 `.tasks/YYYY-MM-DD/<task-id>/TASK.md`。
+- `tracked` 和 `rigorous` 根 Task 位于 `.tasks/YYYY-MM-DD/<task-id>/TASK.md`；schema 5 子 Task 位于父目录的 `subtasks/` 中。
 - 使用项目内 `task-runtime` Skill；确定性操作优先调用 `.tasks/bin/taskctl`。
 - 创建、迁移或修改 Task 协议时按需读取 `.tasks/TASK_WORKFLOW.md`；普通恢复不读取工作流。
 
@@ -23,13 +23,14 @@
 3. 选中后只读取 `TASK.md`，不自动打开其中链接。
 4. 根据 Context Map 的读取条件显式加载单个资源，不递归展开。
 5. 关联 Task 默认只读 Meta；不得批量扫描 `.tasks/` 正文。
+6. 父子树使用有深度和数量上限的 `taskctl children/tree/lineage` 查看；这些命令只返回 L0，不自动打开任何节点正文。
 
 ### 写入与恢复
 
 - `TASK.md` 只保存当前任务契约、权威状态、Context Map 和依赖契约，不保存聊天转录或完整历史。
 - 只在目标或决定变化、设计就绪、已验证里程碑、阻塞、长任务变化、中断、完成或重开时更新。
 - 使用 `revision` 和 `taskctl update/write --expect-revision` 写入；冲突时重新读取并合并，不静默覆盖。
-- 详细设计、runbook、decision、iteration 和 evidence 按需创建并登记到 Context Map。新 Task 不强制创建 F000。
+- 详细设计、runbook、decision、iteration 和 evidence 按需创建并登记到 Context Map。资源不得跨入 `subtasks/`；读取前检查大小并使用预算。新 Task 不强制创建 F000。
 - Task 可纳入 Git，但未经用户确认提交范围，不自动暂存、提交或推送。
 
 ## 修改与解释

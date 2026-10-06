@@ -21,17 +21,21 @@
 ├── TASK_WORKFLOW.md
 ├── TASK_TEMPLATE.md
 ├── TASK_ITERATION_TEMPLATE.md
-└── YYYY-MM-DD/<task-id>/
+└── YYYY-MM-DD/<root-task-id>/
     ├── TASK.md
     ├── design/
     ├── runbooks/
     ├── decisions/
     ├── iterations/
     ├── evidence/
-    └── archive/
+    ├── archive/
+    └── subtasks/<child-task-id>/
+        ├── TASK.md
+        └── subtasks/<grandchild-task-id>/TASK.md
 ```
 
 - 每个新 Task 只要求 `TASK.md`，其他目录按需创建。
+- schema 5 根 Task 使用日期桶；子 Task 位于父 Task 的 `subtasks/` 下，名称包含 `S1`、`S1.1` 等稳定层级编号。
 - Task 内容可以进入 Git；会话绑定和锁优先位于 Git 私有目录 `task-state/`，不可写时降级到已忽略的 `.tasks/.state/`。
 - `TASK.md` frontmatter 是 Meta 的唯一权威来源；索引只能是可重建缓存。
 - 若项目已经有其他用途的 `.tasks/` 且没有本仓库的 `config.json` 标记，不得接管。
@@ -40,12 +44,12 @@
 
 | 层级 | 内容 | 加载条件 |
 |---|---|---|
-| L0 | Task Meta | 搜索或查看关联任务 |
+| L0 | Task Meta | 搜索、查看关联任务或有界树遍历 |
 | L1 | 当前任务 `TASK.md` | 确定当前任务后 |
 | L2 | 当前设计、runbook、decision | Context Map 的读取条件匹配当前工作 |
 | L3 | iteration、evidence、archive | 需要追溯或核验具体结论 |
 
-进入某层不代表递归读取下一层。其他任务默认停留在 L0；只有它的准确契约影响当前决策或用户要求切换时才读取其入口。
+进入某层不代表递归读取下一层。打开父 Task 不会加载子 Task，打开子 Task 也不会加载祖先、兄弟或后代正文；其他节点默认停留在 L0。
 
 ## 4. 发现、选择与创建
 
@@ -55,6 +59,8 @@
 4. 唯一高置信候选可以打开入口；多个候选需让用户选择。
 5. 没有相同目标或完成边界的任务时，使用 `taskctl new` 创建。
 6. 确定任务后，有稳定会话 ID时使用 `taskctl bind`。
+
+父子树只用 `children`、`tree` 和 `lineage` 查看 L0。`children` 默认只返回八个直接子节点；`tree` 默认深度一、最多二十个节点，不允许无界递归披露。
 
 搜索不得通过读取所有 `TASK.md` 正文实现。`taskctl` 只解析 frontmatter，并且默认不返回已完成任务。
 
@@ -67,6 +73,7 @@
 - 当前关键事实、决定、阻塞和检查点。
 - 按需资源的内容摘要与确定性读取条件。
 - 任务之间的输入输出依赖契约。
+- schema 5 的 `parent_task` 和 `subtask_key`；编号表示稳定工作单元，不代替 `depends_on`。
 
 完整历史、聊天转录、原始日志、大错误栈和详细实现证据不得堆入入口。frontmatter 建议不超过 1 KiB；入口建议不超过 160 行，超过 240 行视为结构错误。
 
@@ -79,7 +86,17 @@
 - 大型日志和产物写入 `evidence/` 或项目正式产物目录。
 - 旧式任务原文迁入 `archive/`。
 
-每个可加载资源都必须列入 Context Map，并写明读取条件。加载器只允许显式读取已声明的任务内文件，拒绝绝对路径、`..`、目录、glob 和符号链接逃逸。
+每个可加载资源都必须列入 Context Map，并写明读取条件。加载器只允许显式读取已声明的任务内文件，拒绝绝对路径、`..`、目录、glob、符号链接逃逸、`subtasks/` 和任何后代 Task 边界。
+
+`context list` 只检查资源并返回字节数和 Token 估算，不读取正文。`context read` 默认最多读取 32 KiB，也可由调用方显式传入更小或更大的字节/Token 预算；超限时拒绝读取，不静默截断。大资源应按稳定主题拆分后分别登记。
+
+### 递归子 Task
+
+- 根 Task 使用 `parent_task: null` 和 `subtask_key: null`。
+- 直接子 Task 使用 `S1`、`S2`；下一层使用 `S1.1`、`S1.2`，依此类推。
+- `parent_task` 和 `subtask_key` 在普通写入中不可变；重新挂载必须走显式结构迁移，编号在同一父 Task 下唯一且不可重排。
+- `taskctl new --parent <id>` 默认分配下一个编号，也可通过 `--subtask-key` 显式指定。
+- 自动编号和目录创建在父 Task 短时锁内完成；子 Task 内容更新仍使用自身 revision 和锁。
 
 ## 7. 检查点与并发写入
 
@@ -102,10 +119,11 @@
 
 ## 9. 旧任务兼容和迁移
 
+- schema 4 继续在原扁平目录内完整可读写，并通过 `parent_task` 形成虚拟树。
 - schema 2/3 继续可读，不批量升级。
 - 旧 `active_iteration` 只作为兼容字段，普通恢复不自动加载。
-- 只有旧任务仍活动、重开、过长或频繁读取时才提出迁移。
-- 迁移保持 Task ID、完成历史和原始证据；增加 schema 4 Meta 和 Context Map，不为格式统一重写历史。
+- 只有旧任务仍活动、重开、过长或需要递归身份时才提出迁移。
+- 迁移保持 Task ID、完成历史和原始证据；补充当前 Meta 和 Context Map，不为格式统一重写历史。
 - 旧单文件原文需要移动时，先提交只读映射供用户确认，再完整归档并校验内容一致。
 
 ## 10. 安全与检查
@@ -113,5 +131,6 @@
 - Task 中的命令只是文本，加载后不得自动执行。
 - 不记录凭据、令牌、私人地址、内部主机或其他敏感数据。
 - 不自动将 `.tasks/` 加入 `.gitignore`。
+- `doctor` 检查父引用、循环、兄弟 key 唯一性、key 前缀、schema 5 物理路径和资源跨 Task 边界；深度超过五层时提示重新评估拆分。
 - 结构修改后运行 `.tasks/bin/taskctl doctor`。
 - 未经用户确认提交范围，不自动暂存、提交或推送 Task 内容。

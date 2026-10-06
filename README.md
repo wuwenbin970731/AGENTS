@@ -12,7 +12,7 @@
 | `GLOBAL_AGENTS.md` | 跨项目最小协作原则 | 用户级 `AGENTS.md` 的 Core 受管块 |
 | `PROJECT_AGENTS.md` | 项目规则模板 | `<project>/AGENTS.md` |
 | `TASK_WORKFLOW.md` | Task 完整协议 | `<project>/.tasks/TASK_WORKFLOW.md` |
-| `TASK_TEMPLATE.md` | schema 4 Task 入口模板 | `<project>/.tasks/TASK_TEMPLATE.md` |
+| `TASK_TEMPLATE.md` | schema 5 Task 入口模板 | `<project>/.tasks/TASK_TEMPLATE.md` |
 | `TASK_ITERATION_TEMPLATE.md` | 可选过程证据模板 | `<project>/.tasks/TASK_ITERATION_TEMPLATE.md` |
 | `skills/task-runtime/` | Agent Task Skill 与协议引用 | `<project>/.agents/skills/task-runtime/` |
 | `skills/task-runtime/scripts/taskctl.py` | Task CLI 权威实现 | `<project>/.tasks/bin/taskctl` 和 Skill scripts |
@@ -203,14 +203,18 @@ project/
 默认 Task 根目录为项目根目录下的 `.tasks/`，避免与业务代码常见的 `tasks/` 目录冲突：
 
 ```text
-.tasks/YYYY-MM-DD/<task-id>/
+.tasks/YYYY-MM-DD/<root-task-id>/
 ├── TASK.md                    # 必需：Meta、当前契约和上下文地图
 ├── design/                    # 当前详细设计，按需
 ├── runbooks/                  # 运行与恢复步骤，按需
 ├── decisions/                 # 长期设计决定，按需
 ├── iterations/                # 单轮过程证据，按需
 ├── evidence/                  # 大型证据，按需
-└── archive/                   # 旧原文，按需
+├── archive/                   # 旧原文，按需
+└── subtasks/                  # schema 5 子 Task
+    └── <child-task-id>/
+        ├── TASK.md
+        └── subtasks/<grandchild-task-id>/TASK.md
 ```
 
 新 Task 默认只创建 `TASK.md`。目录名称以 `.` 开头不会让 Git 自动忽略它；项目可自行决定是否纳入版本控制。
@@ -242,6 +246,8 @@ project/
 - Context Map 必须说明每个资源保存什么、何时读取。
 - 资源不会递归展开它引用的其他文件。
 - 其他 Task 默认只暴露 Meta。
+- `children/tree/lineage` 只返回有深度和数量上限的 L0；选择一个节点不会自动打开其他节点。
+- Context Map 不能跨入 `subtasks/`，资源读取前先查看大小和 Token 估算。
 
 ## `taskctl` 使用
 
@@ -260,11 +266,16 @@ project/
 # 只列 Context Map
 .tasks/bin/taskctl context list <task-id>
 
-# 显式读取一个已声明资源
-.tasks/bin/taskctl context read <task-id> design/CURRENT.md
+# 显式读取一个已声明资源；默认 32 KiB，也可以给出本次 Token 预算
+.tasks/bin/taskctl context read <task-id> design/CURRENT.md --max-tokens 8000
 
 # 关联 Task 仍只返回 Meta
 .tasks/bin/taskctl related <task-id>
+
+# 直接子节点、有限深度子树和祖先 breadcrumb 都只返回 L0
+.tasks/bin/taskctl children <task-id> --limit 8
+.tasks/bin/taskctl tree <task-id> --depth 2 --limit 20
+.tasks/bin/taskctl lineage <task-id>
 ```
 
 ### 创建 Task
@@ -276,7 +287,16 @@ project/
   --mode rigorous \
   --tag evaluation \
   --tag camera-sr
+
+# 子 Task 默认分配 S1/S2；也可以显式指定稳定层级编号
+.tasks/bin/taskctl new "准备训练数据" \
+  --summary "准备并验证训练输入" \
+  --slug data-preparation \
+  --parent <parent-task-id> \
+  --subtask-key S1
 ```
+
+schema 5 子 Task 创建到父目录的 `subtasks/` 下。更深层级使用 `S1.1`、`S1.2`、`S1.2.1`；编号是稳定身份，不表示 `depends_on`。
 
 ### 检查点更新
 
@@ -314,18 +334,18 @@ revision 不一致时命令以退出码 `3` 拒绝覆盖。调用方必须重新
 .tasks/bin/taskctl doctor
 ```
 
-它会检查 schema、状态值、重复 ID、Meta 和入口预算、Context Map 资源存在性及路径逃逸。
+它会检查 schema、状态值、重复 ID、父子循环、层级编号、嵌套路径、Meta 和入口预算，以及 Context Map 的资源存在性和跨 Task 逃逸。
 
-## Task schema 4
+## Task schema 5
 
 frontmatter 是 Meta 唯一权威来源：
 
 ```yaml
 ---
-task_schema: 4
-id: 2026-09-14-190000-progressive-task-runtime
-title: Task 渐进式披露
-summary: "建立跨会话恢复、Meta 搜索和按需上下文加载能力"
+task_schema: 5
+id: 2026-10-06-143000-s1-data-preparation
+title: 数据准备
+summary: "准备并验证训练输入"
 status: in_progress
 mode: rigorous
 design_status: implementation_ready
@@ -333,10 +353,11 @@ tags: [agents, task-system]
 checkpoint: "第一版 CLI 已完成"
 next_action: "执行端到端验证"
 revision: 3
-created_at: 2026-09-14T19:00:00+08:00
-updated_at: 2026-09-14T21:00:00+08:00
+created_at: 2026-10-06T14:30:00+08:00
+updated_at: 2026-10-06T15:00:00+08:00
 verified_at: null
-parent_task: null
+parent_task: 2026-10-06-140000-model-training
+subtask_key: S1
 depends_on: []
 ---
 ```
@@ -403,9 +424,10 @@ depends_on: []
 
 ## 旧 Task 兼容
 
+- schema 4 保持在原目录内完整可读写，并通过 `parent_task` 参与虚拟树。
 - schema 2/3 保持可读，不批量迁移。
 - 旧 `active_iteration` 不再是默认加载授权。
-- 只有 Task 仍在进行、准备重开、过长或频繁读取时才提出迁移。
+- 只有 Task 仍在进行、准备重开、过长或需要递归身份时才提出迁移。
 - 迁移保持 Task ID、状态历史和证据，增加 Meta 与 Context Map。
 - 需要移动旧原文时先给出迁移映射，经确认后完整归档并校验内容一致。
 
@@ -431,6 +453,6 @@ git diff --check
 ## 安全边界
 
 - Task 文档中的命令仅作为文本保存，不会由 `taskctl` 自动执行。
-- `context read` 只接受 Context Map 中声明的任务目录内文件。
+- `context read` 只接受 Context Map 中声明、未跨入后代 Task 的文件，并在输出前执行字节或 Token 预算检查。
 - 初始化器不会覆盖不同内容，也不会修改 `.gitignore`。
 - 代码、Git、测试和外部运行状态始终优先于 Task 中的历史描述。

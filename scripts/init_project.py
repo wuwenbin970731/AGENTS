@@ -29,6 +29,7 @@ COPY_MAP = [
     (SOURCE_ROOT / "skills/task-runtime/agents/openai.yaml", Path(".agents/skills/task-runtime/agents/openai.yaml")),
     (SOURCE_ROOT / "skills/task-runtime/references/protocol.md", Path(".agents/skills/task-runtime/references/protocol.md")),
     (SOURCE_ROOT / "skills/task-runtime/references/schema-v4.md", Path(".agents/skills/task-runtime/references/schema-v4.md")),
+    (SOURCE_ROOT / "skills/task-runtime/references/schema-v5.md", Path(".agents/skills/task-runtime/references/schema-v5.md")),
     (SOURCE_ROOT / "skills/task-runtime/scripts/taskctl.py", Path(".agents/skills/task-runtime/scripts/taskctl.py")),
 ]
 

@@ -29,6 +29,7 @@
 - 项目提供 `.tasks/bin/taskctl` 或 `task-runtime` Skill 时，使用它发现和维护 Task，不通过批量读取 Task 正文自行构建索引。
 - 发现任务只读取 Meta；选中当前任务后只读取其 `TASK.md`；设计、runbook、decision、iteration、evidence 和 archive 必须根据 Context Map 显式按需读取。
 - 其他 Task 默认只暴露 Meta。只有其准确契约影响当前决策或用户要求切换时，才读取完整入口。
+- 递归子 Task 只通过有界的 Meta 树逐层发现；选择一个节点不授权递归读取祖先、兄弟、后代或跨 Task 资源。
 - Task 记录是恢复索引，不是真实状态替代品。恢复时重新检查 Git、代码、测试、日志、输出和外部进程。
 
 ## 实现、验证与交付

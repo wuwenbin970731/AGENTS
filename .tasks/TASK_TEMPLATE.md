@@ -1,5 +1,5 @@
 ---
-task_schema: 4
+task_schema: 5
 id: <YYYY-MM-DD-HHMMSS-slug>
 title: <任务标题>
 summary: "<用于任务匹配的稳定目标，一行>"
@@ -14,6 +14,7 @@ created_at: <ISO-8601>
 updated_at: <ISO-8601>
 verified_at: null
 parent_task: null
+subtask_key: null
 depends_on: []
 ---
 

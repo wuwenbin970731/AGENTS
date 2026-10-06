@@ -1,5 +1,5 @@
 ---
-task_schema: 4
+task_schema: 5
 task_id: <YYYY-MM-DD-HHMMSS-slug>
 iteration: F000
 status: in_progress

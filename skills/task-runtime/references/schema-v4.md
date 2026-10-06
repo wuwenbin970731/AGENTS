@@ -1,4 +1,6 @@
-# Task Schema 4
+# Task Schema 4 (Compatibility)
+
+Schema 4 remains writable in place for existing flat tasks. New tasks use schema 5; migrate only an active task that needs recursive identity or nested storage.
 
 ## Contents
 

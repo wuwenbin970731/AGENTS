@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "managed_by": "wuwenbin970731/AGENTS",
-  "runtime_version": "0.1.0",
-  "task_schema": 4,
+  "runtime_version": "0.2.0",
+  "task_schema": 5,
   "task_root": ".tasks",
   "runtime": ".tasks/bin/taskctl"
 }
