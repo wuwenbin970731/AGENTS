@@ -86,6 +86,23 @@ class TaskRuntimeTest(unittest.TestCase):
             arguments.extend(("--subtask-key", subtask_key))
         return json.loads(self.taskctl(*arguments).stdout)
 
+    def create_fake_am(self, *, fail: bool = False) -> Path:
+        path = self.project / ("fake-am-fail" if fail else "fake-am")
+        body = """#!/usr/bin/env python3
+from pathlib import Path
+import sys
+
+if __FAIL__:
+    print("intentional renderer failure", file=sys.stderr)
+    raise SystemExit(7)
+arguments = sys.argv[1:]
+output = Path(arguments[arguments.index("-o") + 1])
+output.write_text(sys.stdin.read(), encoding="utf-8")
+""".replace("__FAIL__", "True" if fail else "False")
+        path.write_text(body, encoding="utf-8")
+        path.chmod(0o755)
+        return path
+
     def test_initializer_plans_before_apply_and_is_idempotent(self) -> None:
         preview = self.run_command(sys.executable, str(INIT), str(self.project))
         plan = json.loads(preview.stdout)
@@ -99,7 +116,7 @@ class TaskRuntimeTest(unittest.TestCase):
         self.assertTrue((self.project / ".agents/skills/task-runtime/references/schema-v5.md").exists())
         runtime_config = json.loads((self.project / ".tasks/config.json").read_text(encoding="utf-8"))
         self.assertEqual(runtime_config["task_schema"], 5)
-        self.assertEqual(runtime_config["runtime_version"], "0.2.0")
+        self.assertEqual(runtime_config["runtime_version"], "0.3.0")
         manifest = json.loads((self.project / ".tasks/agent-core.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["schema"], 1)
         self.assertIn(".tasks/bin/taskctl", manifest["files"])
@@ -311,6 +328,124 @@ class TaskRuntimeTest(unittest.TestCase):
             [row["subtask_key"] for row in lineage["items"]],
             [None, "S1", "S1.1"],
         )
+
+    def test_graph_renders_bounded_l0_snapshot_with_optional_am_cli(self) -> None:
+        self.initialize()
+        root = self.create_task(title="Graph root", slug="graph-root")
+        first = self.create_child(
+            str(root["id"]),
+            "Completed <script>alert(1)</script> | [child]",
+            "completed-child",
+        )
+        second = self.create_child(str(root["id"]), "Pending child", "pending-child")
+        nested = self.create_child(str(first["id"]), "Nested secret", "nested-secret")
+        self.taskctl(
+            "update",
+            str(first["id"]),
+            "--expect-revision",
+            "1",
+            "--status",
+            "completed",
+            "--checkpoint",
+            "Verified child",
+        )
+        nested_path = self.project / str(nested["path"])
+        nested_path.write_text(
+            nested_path.read_text(encoding="utf-8") + "\nGRAPH_BODY_SECRET_6621\n",
+            encoding="utf-8",
+        )
+
+        result = json.loads(
+            self.taskctl(
+                "graph",
+                str(root["id"]),
+                "--depth",
+                "2",
+                "--limit",
+                "2",
+                "--output",
+                "evidence/custom-graph.html",
+                "--am-cli",
+                str(self.create_fake_am()),
+            ).stdout
+        )
+        output = self.project / str(root["path"])
+        output = output.parent / "evidence/custom-graph.html"
+        draft = output.read_text(encoding="utf-8")
+
+        self.assertEqual(result["root_task"], root["id"])
+        self.assertEqual(result["returned"], 2)
+        self.assertEqual(result["total"], 4)
+        self.assertEqual(result["remaining_count"], 2)
+        self.assertEqual(result["max_depth"], 2)
+        self.assertRegex(result["fingerprint"], r"^[0-9a-f]{12}$")
+        self.assertEqual(result["output"], str(output.relative_to(self.project)))
+        self.assertIn("Task 关系图谱", draft)
+        self.assertIn("Completed &lt;script&gt;alert(1)&lt;/script&gt; ／ \\[child\\]", draft)
+        self.assertNotIn("<script>", draft)
+        self.assertIn("completed", draft)
+        self.assertIn("仍有 2 个节点超出数量预算", draft)
+        self.assertNotIn("Pending child", draft)
+        self.assertNotIn("GRAPH_BODY_SECRET_6621", draft)
+
+        repeated = json.loads(
+            self.taskctl(
+                "graph",
+                str(root["id"]),
+                "--depth",
+                "2",
+                "--limit",
+                "2",
+                "--output",
+                "evidence/custom-graph.html",
+                "--am-cli",
+                str(self.create_fake_am()),
+            ).stdout
+        )
+        self.assertEqual(repeated["fingerprint"], result["fingerprint"])
+        self.assertEqual(output.read_text(encoding="utf-8"), draft)
+
+    def test_graph_rejects_unsafe_output_and_preserves_existing_file_on_failure(self) -> None:
+        self.initialize()
+        root = self.create_task(title="Graph safety", slug="graph-safety")
+        fake_am = self.create_fake_am()
+        escaped = self.taskctl(
+            "graph",
+            str(root["id"]),
+            "--output",
+            "../outside.html",
+            "--am-cli",
+            str(fake_am),
+            check=False,
+        )
+        self.assertEqual(escaped.returncode, 2)
+        self.assertIn("must stay inside", escaped.stderr)
+        self.assertFalse((self.project / ".tasks/outside.html").exists())
+
+        missing = self.taskctl(
+            "graph",
+            str(root["id"]),
+            "--am-cli",
+            str(self.project / "missing-am.mjs"),
+            check=False,
+        )
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn("CLI not found", missing.stderr)
+
+        task_path = self.project / str(root["path"])
+        output = task_path.parent / "evidence/task-graph.html"
+        output.parent.mkdir()
+        output.write_text("ORIGINAL_GRAPH\n", encoding="utf-8")
+        failed = self.taskctl(
+            "graph",
+            str(root["id"]),
+            "--am-cli",
+            str(self.create_fake_am(fail=True)),
+            check=False,
+        )
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("intentional renderer failure", failed.stderr)
+        self.assertEqual(output.read_text(encoding="utf-8"), "ORIGINAL_GRAPH\n")
 
     def test_context_budget_and_descendant_task_boundary(self) -> None:
         self.initialize()

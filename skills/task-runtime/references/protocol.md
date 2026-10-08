@@ -6,10 +6,11 @@
 2. Selection state machine
 3. Disclosure levels
 4. Recursive task traversal
-5. Resource budgets
-6. Checkpoint writes
-7. Session and concurrency behavior
-8. Legacy compatibility
+5. Derived HTML graph views
+6. Resource budgets
+7. Checkpoint writes
+8. Session and concurrency behavior
+9. Legacy compatibility
 
 ## 1. Storage boundaries
 
@@ -50,19 +51,29 @@ Opening one level never recursively opens the next. Other tasks remain at L0 unl
 - Selecting a child promotes only that child to L1. Ancestors, siblings, and descendants remain at L0 until separately selected.
 - A Context Map resource cannot enter `subtasks/` or any directory governed by a descendant `TASK.md`.
 
-## 5. Resource budgets
+## 5. Derived HTML graph views
+
+`graph` renders the same bounded L0 subtree as a single-file HTML snapshot through `answer-me-with-html`. It defaults to depth three and at most 100 nodes, while retaining the implementation maximum depth of eight and maximum node count of 100.
+
+The selected Task directory is the output boundary. Relative paths resolve from that directory; output cannot escape it or enter `subtasks/`. The default is `evidence/task-graph.html`. Rendering uses a same-directory temporary file and replaces the target only after success.
+
+The page is a derived view, never task truth. It shows the stable hierarchy key, status, checkpoint, direct child count, bounded status totals, and any remaining node count. It never reads Task bodies or Context Map resources. Register the exact HTML path in the current Task's Context Map only when agents need to load it as evidence.
+
+`answer-me-with-html` is optional. The runtime can discover an explicit `--am-cli`, `ANSWER_ME_WITH_HTML_CLI`, a global `am`, or common user-level Skill locations. If no renderer is available, fail without changing an existing page and keep `tree --format json` available.
+
+## 6. Resource budgets
 
 `context list` reports `size_bytes` and a conservative `estimated_tokens` for every valid resource without reading its content. Byte size is the deterministic boundary; token estimates depend on the model and are only planning hints.
 
 `context read` has a default 32 KiB limit and accepts an explicit byte or token budget. It rejects oversized content before emitting it and never silently truncates. Large resources should be split by stable topic or section and declared separately in the Context Map.
 
-## 6. Checkpoint writes
+## 7. Checkpoint writes
 
 Write current state at semantic checkpoints rather than every message or code edit. `TASK.md` contains task contract, current work state, Context Map, and dependency contract. Keep detailed or append-only evidence in declared resources.
 
 Update a resource first, then update the task entry, increment `revision`, and refresh the local session's seen revision. Filesystem writes must use same-directory temporary files followed by atomic replacement.
 
-## 7. Session and concurrency behavior
+## 8. Session and concurrency behavior
 
 A task may be bound to several sessions; a session has at most one current task. Binding is a local hint, not ownership. Hold a task lock only during the final write. Compare the revision read at work start with the current revision under the lock. On mismatch, stop with a conflict and merge from the current entry.
 
@@ -70,6 +81,6 @@ Lock files older than five minutes may be treated as stale. A lock must never be
 
 Automatic `subtask_key` allocation and child-directory creation hold the parent lock only during allocation and creation. Updates to a child use the child's own ID lock and revision.
 
-## 8. Legacy compatibility
+## 9. Legacy compatibility
 
 Schema 4 tasks remain writable in their existing flat locations and participate in virtual trees through `parent_task`. Schema 2/3 tasks remain readable; their `active_iteration` is compatibility metadata and is not automatically loaded. Upgrade only an active or reopened task, preserve its ID and history, and never bulk-move historical tasks merely to normalize layout.

@@ -60,7 +60,7 @@
 5. 没有相同目标或完成边界的任务时，使用 `taskctl new` 创建。
 6. 确定任务后，有稳定会话 ID时使用 `taskctl bind`。
 
-父子树只用 `children`、`tree` 和 `lineage` 查看 L0。`children` 默认只返回八个直接子节点；`tree` 默认深度一、最多二十个节点，不允许无界递归披露。
+父子树只用 `children`、`tree` 和 `lineage` 查看 L0。`children` 默认只返回八个直接子节点；`tree` 默认深度一、最多二十个节点，不允许无界递归披露。需要面向人查看关系和状态时，可用 `graph` 把相同的有界 L0 数据渲染为单文件 HTML。
 
 搜索不得通过读取所有 `TASK.md` 正文实现。`taskctl` 只解析 frontmatter，并且默认不返回已完成任务。
 
@@ -89,6 +89,8 @@
 每个可加载资源都必须列入 Context Map，并写明读取条件。加载器只允许显式读取已声明的任务内文件，拒绝绝对路径、`..`、目录、glob、符号链接逃逸、`subtasks/` 和任何后代 Task 边界。
 
 `context list` 只检查资源并返回字节数和 Token 估算，不读取正文。`context read` 默认最多读取 32 KiB，也可由调用方显式传入更小或更大的字节/Token 预算；超限时拒绝读取，不静默截断。大资源应按稳定主题拆分后分别登记。
+
+`taskctl graph` 生成的是显式刷新的派生快照，不是 Task 状态源。默认输出到所选 Task 的 `evidence/task-graph.html`，且拒绝越出当前 Task 或写入 `subtasks/`。图谱只包含有深度和数量边界的 L0 Meta；需要作为 Agent 上下文读取时，必须在当前 Task 的 Context Map 中显式登记。渲染器不可用时，继续使用 `tree --format json`，不得把可视化依赖变成 Task 管理的硬依赖。
 
 ### 递归子 Task
 

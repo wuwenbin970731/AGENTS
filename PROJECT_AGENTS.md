@@ -24,6 +24,7 @@
 4. 根据 Context Map 的读取条件显式加载单个资源，不递归展开。
 5. 关联 Task 默认只读 Meta；不得批量扫描 `.tasks/` 正文。
 6. 父子树使用有深度和数量上限的 `taskctl children/tree/lineage` 查看；这些命令只返回 L0，不自动打开任何节点正文。
+7. 需要面向人查看关系和状态时，使用有界的 `taskctl graph` 生成派生 HTML；图谱不是 Task 状态源。
 
 ### 写入与恢复
 

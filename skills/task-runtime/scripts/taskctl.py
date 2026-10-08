@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,13 +19,15 @@ import time
 from typing import Any, Iterator
 
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 CONFIG_MARKER = "wuwenbin970731/AGENTS"
 CURRENT_SCHEMA = 5
 WRITABLE_SCHEMAS = {4, 5}
 DEFAULT_CONTEXT_MAX_BYTES = 32 * 1024
 DEFAULT_CHILD_LIMIT = 8
 DEFAULT_TREE_LIMIT = 20
+DEFAULT_GRAPH_DEPTH = 3
+DEFAULT_GRAPH_LIMIT = 100
 MAX_TREE_DEPTH = 8
 MAX_TREE_LIMIT = 100
 SUBTASK_KEY_PATTERN = re.compile(r"^S[1-9][0-9]*(?:\.[1-9][0-9]*)*$")
@@ -38,6 +41,7 @@ VALID_DESIGN_STATUSES = {
     "implementation_ready",
     "implemented",
 }
+STATUS_DISPLAY_ORDER = ("in_progress", "awaiting_user", "blocked", "pending", "completed")
 META_FIELDS = (
     "task_schema",
     "id",
@@ -697,6 +701,309 @@ def task_graph(
     return tasks, by_id, children
 
 
+def collect_tree_rows(
+    project_root: Path, selected: dict[str, Any], depth_limit: int
+) -> list[dict[str, Any]]:
+    if depth_limit < 0 or depth_limit > MAX_TREE_DEPTH:
+        raise TaskCtlError(f"--depth must be between 0 and {MAX_TREE_DEPTH}")
+    tasks, _, children = task_graph(project_root)
+    counts = {
+        str(meta.get("id")): len(children.get(str(meta.get("id")), []))
+        for _, meta in tasks
+    }
+    rows: list[dict[str, Any]] = []
+    active: set[str] = set()
+
+    def visit(meta: dict[str, Any], depth: int) -> None:
+        task_id = str(meta.get("id"))
+        if task_id in active:
+            raise TaskCtlError(f"parent cycle detected at {task_id}")
+        rows.append(
+            compact_tree_meta(meta, child_count=counts.get(task_id, 0), tree_depth=depth)
+        )
+        if depth >= depth_limit:
+            return
+        active.add(task_id)
+        for _, child in children.get(task_id, []):
+            visit(child, depth + 1)
+        active.remove(task_id)
+
+    visit(selected, 0)
+    return rows
+
+
+def plain_inline(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def safe_markdown_inline(value: Any) -> str:
+    text = plain_inline(value).replace("|", "／").replace("`", "'")
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("[", "\\[")
+        .replace("]", "\\]")
+    )
+
+
+def graph_data_fingerprint(
+    root_task: str, depth: int, limit: int, total: int, rows: list[dict[str, Any]]
+) -> str:
+    payload = {
+        "root_task": root_task,
+        "depth": depth,
+        "limit": limit,
+        "total": total,
+        "items": rows,
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
+
+def graph_output_path(task_path: Path, output: Path | None) -> Path:
+    task_directory = task_path.parent.resolve()
+    target = (
+        task_directory / "evidence/task-graph.html"
+        if output is None
+        else output.expanduser()
+    )
+    if not target.is_absolute():
+        target = task_directory / target
+    target = target.resolve()
+    if not target.is_relative_to(task_directory):
+        raise TaskCtlError("--output must stay inside the selected task directory")
+    relative = target.relative_to(task_directory)
+    if "subtasks" in relative.parts:
+        raise TaskCtlError("--output cannot cross a descendant task boundary")
+    if target.suffix.casefold() != ".html":
+        raise TaskCtlError("--output must use an .html suffix")
+    if target.exists() and not target.is_file():
+        raise TaskCtlError("--output must identify a file")
+    return target
+
+
+def am_command(project_root: Path, requested: str | None) -> list[str]:
+    def command_for(candidate: str, *, explicit: bool) -> list[str] | None:
+        raw = Path(candidate).expanduser()
+        path_candidate: Path | None = None
+        if raw.is_absolute():
+            path_candidate = raw
+        elif raw.parent != Path(".") or raw.suffix in {".js", ".mjs"}:
+            path_candidate = (project_root / raw).resolve()
+        if path_candidate is not None:
+            if not path_candidate.is_file():
+                if explicit:
+                    raise TaskCtlError(f"answer-me-with-html CLI not found: {candidate}")
+                return None
+            if path_candidate.suffix.casefold() in {".js", ".mjs"}:
+                node = shutil.which("node")
+                if node is None:
+                    raise TaskCtlError("Node.js is required to run answer-me-with-html")
+                return [node, str(path_candidate)]
+            if not os.access(path_candidate, os.X_OK):
+                if explicit:
+                    raise TaskCtlError(f"answer-me-with-html CLI is not executable: {candidate}")
+                return None
+            return [str(path_candidate)]
+        executable = shutil.which(candidate)
+        if executable:
+            return [executable]
+        if explicit:
+            raise TaskCtlError(f"answer-me-with-html CLI not found: {candidate}")
+        return None
+
+    if requested:
+        command = command_for(requested, explicit=True)
+        assert command is not None
+        return command
+
+    configured = os.environ.get("ANSWER_ME_WITH_HTML_CLI")
+    if configured:
+        command = command_for(configured, explicit=True)
+        assert command is not None
+        return command
+
+    global_command = command_for("am", explicit=False)
+    if global_command:
+        return global_command
+
+    trae_home = Path(os.environ.get("TRAE_HOME", str(Path.home() / ".trae"))).expanduser()
+    candidates = (
+        Path.home() / ".agents/skills/answer-me-with-html/scripts/am.mjs",
+        trae_home / "skills/answer-me-with-html/scripts/am.mjs",
+    )
+    for candidate in candidates:
+        command = command_for(str(candidate), explicit=False)
+        if command:
+            return command
+    raise TaskCtlError(
+        "answer-me-with-html CLI not found; install the Skill or pass --am-cli /path/to/am.mjs"
+    )
+
+
+def graph_markdown(
+    root: dict[str, Any],
+    rows: list[dict[str, Any]],
+    *,
+    depth: int,
+    limit: int,
+    total: int,
+    fingerprint: str,
+) -> str:
+    root_id = safe_markdown_inline(root.get("id"))
+    root_title = plain_inline(root.get("title"))
+    root_status = safe_markdown_inline(root.get("status"))
+    remaining = max(total - len(rows), 0)
+    tree_lines = []
+    for row in rows:
+        item_depth = int(row.get("tree_depth") or 0)
+        key = safe_markdown_inline(row.get("subtask_key") or "ROOT")
+        title = safe_markdown_inline(row.get("title"))
+        status = safe_markdown_inline(row.get("status"))
+        child_count = int(row.get("child_count") or 0)
+        tree_lines.append(
+            f"{'  ' * item_depth}`{key}` {title} | {status} · 直接子 Task {child_count}"
+        )
+
+    status_counts = {
+        status: sum(1 for row in rows if row.get("status") == status)
+        for status in STATUS_DISPLAY_ORDER
+    }
+    status_rows = []
+    for status in STATUS_DISPLAY_ORDER:
+        count = status_counts[status]
+        if count:
+            marker = {
+                "completed": "ok completed",
+                "blocked": "no blocked",
+                "awaiting_user": "warn awaiting_user",
+            }.get(status, status)
+            status_rows.append(f"| `{status}` | {count} | {marker} |")
+
+    open_rows = []
+    for row in rows:
+        if row.get("status") == "completed":
+            continue
+        key = safe_markdown_inline(row.get("subtask_key") or "ROOT")
+        title = safe_markdown_inline(row.get("title"))
+        status = safe_markdown_inline(row.get("status"))
+        checkpoint = safe_markdown_inline(row.get("checkpoint"))
+        open_rows.append(f"| `{key}` | {title} | `{status}` | {checkpoint} |")
+    if not open_rows:
+        open_rows.append("| - | 当前范围内没有未完成 Task | `completed` | - |")
+
+    coverage_kind = "warn" if remaining else "ok"
+    coverage_title = "图谱已截断" if remaining else "图谱覆盖当前查询范围"
+    coverage_text = (
+        f"页面显示 {len(rows)} 个节点，仍有 {remaining} 个节点超出数量预算。"
+        if remaining
+        else f"页面显示 {len(rows)} 个节点，没有节点超出数量预算。"
+    )
+    return f"""---
+template: sheet
+theme: blueprint
+title: {json.dumps(f'Task 关系图谱 · {root_title}', ensure_ascii=False)}
+subtitle: 有界 L0 元数据生成的只读快照
+cols: 3
+lang: zh
+source: taskctl {VERSION}
+---
+
+## A 根 Task 概览 {{span=3}}
+```kv cols=3
+根 Task: {root_id}
+当前状态: {root_status}
+查询深度: {depth}
+节点上限: {limit}
+返回节点: {len(rows)} / {total}
+数据指纹: {fingerprint}
+```
+
+## B Task 层级与状态 {{span=3}}
+```tree
+{chr(10).join(tree_lines)}
+```
+
+## C 状态汇总
+| 状态 | 节点数 | 标识 |
+|---|---:|---|
+{chr(10).join(status_rows)}
+
+统计只覆盖本页返回的节点。
+
+## D 当前未完成节点 {{span=2}}
+| 编号 | Task | 状态 | 当前检查点 |
+|---|---|---|---|
+{chr(10).join(open_rows)}
+
+## E 披露与完整性
+```callout {coverage_kind} {coverage_title}
+{coverage_text}
+```
+
+- 图谱只读取 Task frontmatter。
+- 页面不包含 Task 正文或 Context Map 资源。
+- 选择节点不会自动提升披露级别。
+- 状态变化后请重新运行 `taskctl graph`。
+"""
+
+
+def render_graph(
+    command: list[str],
+    draft: str,
+    output: Path,
+    *,
+    theme: str,
+    mode: str,
+    open_page: bool,
+) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.stem}.", suffix=".html", dir=output.parent
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    temporary.unlink(missing_ok=True)
+    render_command = [
+        *command,
+        "render",
+        "-",
+        "-o",
+        str(temporary),
+        "--theme",
+        theme,
+        "--mode",
+        mode,
+        "--open" if open_page else "--no-open",
+    ]
+    try:
+        try:
+            result = subprocess.run(
+                render_command,
+                input=draft,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+        except OSError as error:
+            raise TaskCtlError(f"failed to start answer-me-with-html: {error}") from error
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            if len(detail) > 2000:
+                detail = detail[-2000:]
+            raise TaskCtlError(
+                "answer-me-with-html render failed"
+                + (f": {detail}" if detail else "")
+            )
+        if temporary.is_symlink() or not temporary.is_file():
+            raise TaskCtlError("answer-me-with-html did not create the requested output")
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def cmd_search(args: argparse.Namespace) -> None:
     statuses = VALID_STATUSES if args.all else set(args.status or OPEN_STATUSES)
     rows = []
@@ -896,36 +1203,71 @@ def cmd_lineage(args: argparse.Namespace) -> None:
 
 def cmd_tree(args: argparse.Namespace) -> None:
     _, selected = resolve_task(args.project_root, args.task)
-    if args.depth < 0 or args.depth > MAX_TREE_DEPTH:
-        raise TaskCtlError(f"--depth must be between 0 and {MAX_TREE_DEPTH}")
-    tasks, _, children = task_graph(args.project_root)
-    counts = {
-        str(meta.get("id")): len(children.get(str(meta.get("id")), []))
-        for _, meta in tasks
-    }
-    rows: list[dict[str, Any]] = []
-    active: set[str] = set()
-
-    def visit(meta: dict[str, Any], depth: int) -> None:
-        task_id = str(meta.get("id"))
-        if task_id in active:
-            raise TaskCtlError(f"parent cycle detected at {task_id}")
-        rows.append(
-            compact_tree_meta(meta, child_count=counts.get(task_id, 0), tree_depth=depth)
-        )
-        if depth >= args.depth:
-            return
-        active.add(task_id)
-        for _, child in children.get(task_id, []):
-            visit(child, depth + 1)
-        active.remove(task_id)
-
-    visit(selected, 0)
+    rows = collect_tree_rows(args.project_root, selected, args.depth)
     total = len(rows)
     limit = bounded_limit(args.limit)
     emit_bounded_rows(
         rows[:limit], total, args.format, root_task=str(selected["id"]), max_depth=args.depth
     )
+
+
+def emit_graph_result(result: dict[str, Any], output_format: str) -> None:
+    if output_format == "json":
+        emit(result, output_format)
+    elif output_format == "paths":
+        print(result["output"])
+    else:
+        columns = (
+            "root_task",
+            "output",
+            "returned",
+            "total",
+            "remaining_count",
+            "max_depth",
+            "fingerprint",
+        )
+        print("\t".join(columns))
+        print("\t".join(str(result[column]) for column in columns))
+
+
+def cmd_graph(args: argparse.Namespace) -> None:
+    task_path, selected = resolve_task(args.project_root, args.task)
+    rows = collect_tree_rows(args.project_root, selected, args.depth)
+    total = len(rows)
+    limit = bounded_limit(args.limit)
+    if limit == 0:
+        raise TaskCtlError("--limit must be positive for an HTML graph")
+    visible_rows = rows[:limit]
+    root_id = str(selected["id"])
+    fingerprint = graph_data_fingerprint(root_id, args.depth, limit, total, visible_rows)
+    output = graph_output_path(task_path, args.output)
+    renderer = am_command(args.project_root, args.am_cli)
+    draft = graph_markdown(
+        selected,
+        visible_rows,
+        depth=args.depth,
+        limit=limit,
+        total=total,
+        fingerprint=fingerprint,
+    )
+    render_graph(
+        renderer,
+        draft,
+        output,
+        theme=args.theme,
+        mode=args.mode,
+        open_page=args.open,
+    )
+    result = {
+        "root_task": root_id,
+        "output": str(output.relative_to(args.project_root)),
+        "returned": len(visible_rows),
+        "total": total,
+        "remaining_count": max(total - len(visible_rows), 0),
+        "max_depth": args.depth,
+        "fingerprint": fingerprint,
+    }
+    emit_graph_result(result, args.format)
 
 
 def cmd_related(args: argparse.Namespace) -> None:
@@ -1248,6 +1590,27 @@ def build_parser() -> argparse.ArgumentParser:
     tree.add_argument("--limit", type=int, default=DEFAULT_TREE_LIMIT)
     add_format(tree)
     tree.set_defaults(func=cmd_tree)
+
+    graph = subparsers.add_parser(
+        "graph", help="render a bounded L0 task subtree with answer-me-with-html"
+    )
+    graph.add_argument("task")
+    graph.add_argument("--depth", type=int, default=DEFAULT_GRAPH_DEPTH)
+    graph.add_argument("--limit", type=int, default=DEFAULT_GRAPH_LIMIT)
+    graph.add_argument(
+        "--output",
+        type=Path,
+        help="HTML path relative to the selected task directory; defaults to evidence/task-graph.html",
+    )
+    graph.add_argument(
+        "--am-cli",
+        help="answer-me-with-html executable or am.mjs path; otherwise discover it automatically",
+    )
+    graph.add_argument("--theme", choices=("blueprint", "shadcn"), default="blueprint")
+    graph.add_argument("--mode", choices=("auto", "light", "dark"), default="auto")
+    graph.add_argument("--open", action="store_true", help="open the rendered page")
+    add_format(graph)
+    graph.set_defaults(func=cmd_graph)
 
     lineage = subparsers.add_parser("lineage", help="show bounded L0 ancestors and the selected task")
     lineage.add_argument("task")

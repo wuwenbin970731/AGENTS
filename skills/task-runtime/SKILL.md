@@ -20,6 +20,7 @@ Use the installed `.tasks/bin/taskctl` when present; otherwise run `scripts/task
 
 - L0: use `search`, `show` without `--entry`, or `related`; these expose metadata only.
 - For task trees, use bounded `children`, `tree`, or `lineage`; these keep every returned node at L0 and never open descendants.
+- When the user needs a visual relationship and status overview, use bounded `graph`; it renders the same L0 tree as a derived HTML snapshot and never becomes task truth.
 - L1: use `show --entry` for the selected task. Reading the entry does not authorize reading linked resources.
 - L2/L3: run `context list`, inspect the reported size, select only the resource whose `read_when` condition matches the current work, then run budgeted `context read`. Never recursively expand resource links or cross into `subtasks/`.
 - Other tasks stay at L0 unless their exact contract affects the current decision or the user asks to switch tasks.
@@ -28,6 +29,7 @@ Use the installed `.tasks/bin/taskctl` when present; otherwise run `scripts/task
 
 - Treat `TASK.md` as current authoritative task state, not as a transcript. Update it only at semantic checkpoints: scope or decision change, design readiness, verified milestone, block, long-running state change, interruption, completion, or reopening.
 - Store detailed design, runbooks, decisions, work evidence, and archives in separate resources declared in the Context Map. Create no resource merely to fill the directory structure.
+- Refresh a Task graph explicitly after relevant metadata changes. If the HTML must be available through `context read`, declare its exact path in the current Task's Context Map.
 - Use `taskctl update --expect-revision N` for metadata-only checkpoints.
 - For body changes, copy the entry to a temporary file, edit it, then use `taskctl write --from <file> --expect-revision N`. If revision conflict exit code 3 occurs, reopen the entry and merge current state; never overwrite it.
 - Recheck Git, code, tests, outputs, logs, and external processes before treating historical task statements as current facts.

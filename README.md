@@ -196,7 +196,7 @@ project/
 .tasks/bin/taskctl doctor
 ```
 
-`taskctl` 只依赖 Python 3.10+ 标准库。
+`taskctl` 的任务管理能力只依赖 Python 3.10+ 标准库。可选的 HTML 图谱需要 Node.js 20+ 和 `answer-me-with-html` Skill；缺少渲染器不影响 JSON、表格和路径查询。
 
 ## Task 存储
 
@@ -277,6 +277,26 @@ project/
 .tasks/bin/taskctl tree <task-id> --depth 2 --limit 20
 .tasks/bin/taskctl lineage <task-id>
 ```
+
+### 生成 Task 关系图谱
+
+```bash
+# 只读取有界 L0 Meta，默认写入所选 Task 的 evidence/task-graph.html
+.tasks/bin/taskctl graph <task-id> --depth 3 --limit 100
+
+# 显式指定 answer-me-with-html 的 CLI、主题和输出文件
+.tasks/bin/taskctl graph <task-id> \
+  --am-cli /path/to/answer-me-with-html/scripts/am.mjs \
+  --theme shadcn \
+  --mode dark \
+  --output evidence/task-graph.html
+```
+
+`graph` 使用与 `tree` 相同的父子关系和 L0 元数据，展示层级编号、状态、检查点、直接子节点数、状态汇总和剩余节点数。默认深度为三，节点上限为一百；实现级最大深度仍为八，最大节点数仍为一百。
+
+HTML 是可重复生成的派生快照，不是 Task 状态源，也不会读取 Task 正文或后代资源。相对输出路径从所选 Task 目录解析，且不能逃出该目录或进入 `subtasks/`。如需把页面作为 Agent 可读取证据，应将文件显式登记到该 Task 的 Context Map；状态变化后重新运行命令刷新页面。
+
+渲染器按以下顺序发现：显式 `--am-cli`、`ANSWER_ME_WITH_HTML_CLI`、全局 `am`、用户目录中的常见 Skill 安装路径。命令默认不打开浏览器，只有显式 `--open` 才打开页面。渲染先写同目录临时文件，成功后再原子替换已有图谱。
 
 ### 创建 Task
 
