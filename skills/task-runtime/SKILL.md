@@ -16,6 +16,10 @@ Use the installed `.tasks/bin/taskctl` when present; otherwise run `scripts/task
 5. Open the entry for one unambiguous match. When multiple plausible tasks remain, show only their metadata and ask which task to use. Create a task only when no task shares the same goal or completion boundary.
 6. Bind the selected task when a stable session ID is available.
 
+## Route Subtask execution
+
+For an execution plan, Orca worker dispatch, acceptance gates, or execution recovery, use the separate `task-orchestration` skill when available. In this source repository its entry is `skills/task-orchestration/SKILL.md`. Keep Task creation, metadata and revision writes here. Creating children alone never authorizes worker launch; do not load orchestration for ordinary Task bookkeeping. If that skill is absent, report the missing workflow rather than inventing it.
+
 ## Disclose context progressively
 
 - L0: use `search`, `show` without `--entry`, or `related`; these expose metadata only.

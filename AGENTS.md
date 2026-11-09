@@ -20,6 +20,11 @@
 - 其他 Task 默认只读 Meta。使用 revision 受控写入，冲突时重新读取并合并。
 - 详细协议只在修改 Task schema、加载行为、迁移或结构不清时读取 `.tasks/TASK_WORKFLOW.md`。
 
+## Subtask 执行编排
+
+- 本仓库 Subtask 的执行计划、Orca 调度与恢复使用 `skills/task-orchestration/SKILL.md`；Task 生命周期仍使用 `skills/task-runtime/SKILL.md`。
+- 创建子 Task 不自动启动 Agent；执行已授权计划时默认验收串行，支持自动串行和并行选集。验收、terminal 关联和执行记录按编排 Skill 处理。
+
 ## 修改约束
 
 - 修改根目录 `TASK_WORKFLOW.md`、`TASK_TEMPLATE.md` 或 `TASK_ITERATION_TEMPLATE.md` 时，同步更新 `.tasks/` 中的自用副本；测试要求字节一致。

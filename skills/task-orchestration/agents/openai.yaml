@@ -1,0 +1,4 @@
+interface:
+  display_name: "Task Orchestration"
+  short_description: "Coordinate Subtasks in Orca terminals with acceptance and durable tracking"
+  default_prompt: "Use $task-orchestration to plan or resume Orca execution of persistent Subtasks, honoring the selected mode and acceptance gates."

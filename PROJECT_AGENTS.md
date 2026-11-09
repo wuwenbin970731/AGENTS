@@ -16,6 +16,16 @@
 - 使用项目内 `task-runtime` Skill；确定性操作优先调用 `.tasks/bin/taskctl`。
 - 创建、迁移或修改 Task 协议时按需读取 `.tasks/TASK_WORKFLOW.md`；普通恢复不读取工作流。
 
+### Subtask 执行编排
+
+- 为 Subtask 制定执行计划、通过 Orca 执行或恢复执行时，加载项目内 `task-orchestration` Skill；Task 创建和状态维护仍使用 `task-runtime`。
+- 创建 Subtask 本身不授权启动 Agent。用户授权执行计划后按约定推进，不重复确认普通启动细节。
+- 默认验收串行，支持自动串行和并行（直接子 Task、显式后代范围或选定批次）；Agent 使用明确配置或本轮选择，terminal 名称关联 Subtask。
+- 后代编排按父节点配置策略，默认继承、允许覆盖；父节点协调汇总、叶子节点执行。使用编排 Skill 的 schema 2 工具校验计划并生成中文执行树，部分覆盖不代表整个父 Task 完成。
+- 面向用户的编排方案、结果和可视化尽可能使用中文；Task ID、命令、路径及程序字段保留原值。
+- 首次启动前提供可视化执行树供用户 Review，展示范围、调度、验收点及 Agent/terminal；同一已获批方案不重复确认，实质变更后重新 Review。
+- 执行计划、实例关联、结果与验收按 Skill 协议持久化；worker 回报完成不等于用户验收通过。Skill 不可用时说明缺失，不猜测执行协议。
+
 ### 渐进加载
 
 1. 用户明确给出 Task 时直接读取该入口；否则优先检查稳定会话绑定。

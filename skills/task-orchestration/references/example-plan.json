@@ -1,0 +1,124 @@
+{
+  "schema": 2,
+  "plan_version": 1,
+  "root_task": "root",
+  "nodes": [
+    {
+      "task_id": "root",
+      "subtask_key": "root",
+      "title": "主任务",
+      "children": [
+        "S1",
+        "S2"
+      ],
+      "known_children": [
+        "S1",
+        "S2"
+      ],
+      "completion_criteria": [
+        "检查通过并提供证据"
+      ],
+      "depends_on": [],
+      "task_revision_at_plan": 1
+    },
+    {
+      "task_id": "S1",
+      "subtask_key": "S1",
+      "title": "后端",
+      "children": [
+        "S1.1",
+        "S1.2"
+      ],
+      "known_children": [
+        "S1.1",
+        "S1.2"
+      ],
+      "completion_criteria": [
+        "检查通过并提供证据"
+      ],
+      "depends_on": [],
+      "mode": "parallel",
+      "task_revision_at_plan": 1
+    },
+    {
+      "task_id": "S1.1",
+      "subtask_key": "S1.1",
+      "title": "接口实现",
+      "children": [],
+      "known_children": [],
+      "completion_criteria": [
+        "检查通过并提供证据"
+      ],
+      "depends_on": [],
+      "agent": "codex",
+      "terminal_title": "示例编排 · S1.1 · 接口实现",
+      "workspace": "current",
+      "task_revision_at_plan": 1
+    },
+    {
+      "task_id": "S1.2",
+      "subtask_key": "S1.2",
+      "title": "数据处理",
+      "children": [],
+      "known_children": [],
+      "completion_criteria": [
+        "检查通过并提供证据"
+      ],
+      "depends_on": [],
+      "agent": "codex",
+      "terminal_title": "示例编排 · S1.2 · 数据处理",
+      "workspace": "current",
+      "task_revision_at_plan": 1
+    },
+    {
+      "task_id": "S2",
+      "subtask_key": "S2",
+      "title": "前端",
+      "children": [
+        "S2.1",
+        "S2.2"
+      ],
+      "known_children": [
+        "S2.1",
+        "S2.2"
+      ],
+      "completion_criteria": [
+        "检查通过并提供证据"
+      ],
+      "depends_on": [],
+      "mode": "auto-sequential",
+      "task_revision_at_plan": 1
+    },
+    {
+      "task_id": "S2.1",
+      "subtask_key": "S2.1",
+      "title": "页面实现",
+      "children": [],
+      "known_children": [],
+      "completion_criteria": [
+        "检查通过并提供证据"
+      ],
+      "depends_on": [],
+      "agent": "codex",
+      "terminal_title": "示例编排 · S2.1 · 页面实现",
+      "workspace": "current",
+      "task_revision_at_plan": 1
+    },
+    {
+      "task_id": "S2.2",
+      "subtask_key": "S2.2",
+      "title": "交互验证",
+      "children": [],
+      "known_children": [],
+      "completion_criteria": [
+        "检查通过并提供证据"
+      ],
+      "depends_on": [],
+      "agent": "codex",
+      "terminal_title": "示例编排 · S2.2 · 交互验证",
+      "workspace": "current",
+      "task_revision_at_plan": 1
+    }
+  ],
+  "external_dependencies": {}
+}
