@@ -31,6 +31,18 @@ COPY_MAP = [
     (SOURCE_ROOT / "skills/task-runtime/references/schema-v4.md", Path(".agents/skills/task-runtime/references/schema-v4.md")),
     (SOURCE_ROOT / "skills/task-runtime/references/schema-v5.md", Path(".agents/skills/task-runtime/references/schema-v5.md")),
     (SOURCE_ROOT / "skills/task-runtime/scripts/taskctl.py", Path(".agents/skills/task-runtime/scripts/taskctl.py")),
+    (SOURCE_ROOT / "skills/task-orchestration/SKILL.md", Path(".agents/skills/task-orchestration/SKILL.md")),
+    (SOURCE_ROOT / "skills/task-orchestration/agents/openai.yaml", Path(".agents/skills/task-orchestration/agents/openai.yaml")),
+    (SOURCE_ROOT / "skills/task-orchestration/references/execution.md", Path(".agents/skills/task-orchestration/references/execution.md")),
+    (SOURCE_ROOT / "skills/task-orchestration/references/visual-review.md", Path(".agents/skills/task-orchestration/references/visual-review.md")),
+    (SOURCE_ROOT / "skills/task-orchestration/references/descendants.md", Path(".agents/skills/task-orchestration/references/descendants.md")),
+    (SOURCE_ROOT / "skills/task-orchestration/references/example-plan.json", Path(".agents/skills/task-orchestration/references/example-plan.json")),
+    (SOURCE_ROOT / "skills/task-orchestration/scripts/planctl.py", Path(".agents/skills/task-orchestration/scripts/planctl.py")),
+    (SOURCE_ROOT / "skills/core-sync/SKILL.md", Path(".agents/skills/core-sync/SKILL.md")),
+    (SOURCE_ROOT / "skills/core-sync/agents/openai.yaml", Path(".agents/skills/core-sync/agents/openai.yaml")),
+    (SOURCE_ROOT / "skills/core-sync/references/workflow.md", Path(".agents/skills/core-sync/references/workflow.md")),
+    (SOURCE_ROOT / "skills/core-sync/references/config.example.json", Path(".agents/skills/core-sync/references/config.example.json")),
+    (SOURCE_ROOT / "skills/core-sync/scripts/core_sync.py", Path(".agents/skills/core-sync/scripts/core_sync.py")),
 ]
 
 

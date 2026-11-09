@@ -1,0 +1,4 @@
+interface:
+  display_name: "Core 批量同步"
+  short_description: "按环境清单并行预览与更新下游仓库，汇总中文提案并校验批准范围和输入变化"
+  default_prompt: "使用 $core-sync 读取当前环境的仓库清单，先生成批量更新执行树和具体预览供我审阅。"

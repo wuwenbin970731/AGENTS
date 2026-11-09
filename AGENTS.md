@@ -25,6 +25,12 @@
 - 本仓库 Subtask 的执行计划、Orca 调度与恢复使用 `skills/task-orchestration/SKILL.md`；Task 生命周期仍使用 `skills/task-runtime/SKILL.md`。
 - 创建子 Task 不自动启动 Agent；执行已授权计划时默认验收串行，支持自动串行和并行选集。验收、terminal 关联和执行记录按编排 Skill 处理。
 
+## Core 批量同步
+
+- 配置清单驱动的下游更新使用 `skills/core-sync/SKILL.md`，复用 Task Runtime 与 Orca 编排。
+- 本地与 SSH 各自在其环境执行；系统级目标去重，项目并行预览。执行树批准不替代系统级/项目级具体内容 Review。
+- `scripts/core_sync.py` 是共享源检出入口；配置及实际路径保存在环境私有文件，批次运行状态保存在独立控制工作区。
+
 ## 修改约束
 
 - 修改根目录 `TASK_WORKFLOW.md`、`TASK_TEMPLATE.md` 或 `TASK_ITERATION_TEMPLATE.md` 时，同步更新 `.tasks/` 中的自用副本；测试要求字节一致。

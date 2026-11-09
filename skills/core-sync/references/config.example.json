@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "core_checkout": "/path/to/AGENTS",
+  "control_workspace": "~/.local/share/agents-core/control",
+  "defaults": {
+    "agent": null,
+    "max_parallel": 3
+  },
+  "global_targets": [
+    {
+      "id": "codex",
+      "path": "~/.codex/AGENTS.md"
+    }
+  ],
+  "repos": [
+    {
+      "id": "project-a",
+      "path": "/path/to/project-a",
+      "enabled": true
+    },
+    {
+      "id": "project-b",
+      "path": "/path/to/project-b",
+      "enabled": false
+    }
+  ]
+}

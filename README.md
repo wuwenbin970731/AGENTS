@@ -16,6 +16,9 @@
 | `TASK_ITERATION_TEMPLATE.md` | 可选过程证据模板 | `<project>/.tasks/TASK_ITERATION_TEMPLATE.md` |
 | `skills/task-runtime/` | Agent Task Skill 与协议引用 | `<project>/.agents/skills/task-runtime/` |
 | `skills/task-runtime/scripts/taskctl.py` | Task CLI 权威实现 | `<project>/.tasks/bin/taskctl` 和 Skill scripts |
+| `skills/task-orchestration/` | Orca Subtask 分层编排与中文执行树 | `<project>/.agents/skills/task-orchestration/` |
+| `skills/core-sync/` | 环境清单驱动的批量预览、批准和同步 | `<project>/.agents/skills/core-sync/` |
+| `scripts/core_sync.py` | 任意 cwd 的共享批量同步入口 | 不复制，直接从 Core 运行 |
 | `scripts/init_project.py` | 新项目初始化器 | 不复制 |
 | `scripts/sync_global_agents.py` | 用户级规则安装与更新器 | 不复制，直接从 Core 运行 |
 | `.tasks/` | 本仓库自己的 Task Runtime 和真实 Task | 不作为模板整体复制 |
@@ -98,7 +101,7 @@ AGENTS Core：https://github.com/wuwenbin970731/AGENTS.git
 在已经初始化过的目标项目会话中发送：
 
 ```text
-请按照 AGENTS Core 的 README 协议更新系统级 AGENTS.md，以及当前项目中的 Agent 规则、Task Runtime 和 task-runtime Skill。
+请按照 AGENTS Core 的 README 协议更新系统级 AGENTS.md，以及当前项目中的 Agent 规则、Task Runtime 和 COPY_MAP 登记的配套 Skills。
 
 AGENTS Core：https://github.com/wuwenbin970731/AGENTS.git
 目标项目：当前工作区根目录
@@ -117,6 +120,44 @@ AGENTS Core：https://github.com/wuwenbin970731/AGENTS.git
 ```
 
 当前版本没有自动覆盖式项目 updater。更新流程由 Agent 执行项目级语义比较，因为下游 `AGENTS.md` 和部分 Markdown 往往包含项目专属修改；系统级部分则由同步器生成并校验计划摘要。`scripts/init_project.py --apply` 是首次安装命令，不是已有项目的更新命令。
+
+### 批量同步多个已有项目
+
+使用 `core-sync` Skill，可以从同一环境任一下游仓库发起整批更新。它复用上一节的语义合并协议，不提供自动覆盖式 updater。每 repo 对应一个 Subtask，先并行预览，再把去重后的系统级提案与项目级提案合并供 Review；确认后只应用获批部分。
+
+本地与 SSH 环境各自维护 `~/.config/agents-core/repos.json`、Core 检出和控制工作区，分别发起更新；不在一轮中跨主机扇出。配置模板见 [config.example.json](skills/core-sync/references/config.example.json)，完整操作与恢复协议见 [workflow.md](skills/core-sync/references/workflow.md)。私有配置不要提交到 Core。
+
+准备条件：
+
+1. 配置 `core_checkout`、目标 repos、当前客户端实际使用的 `global_targets`；默认全部 enabled，发起仓库在清单内也参与，可指定子集。Agent 可在配置中指定，也可本轮用 `--agent` 覆盖；并发默认 3，可调整。
+2. 建立独立控制目录，按本文首次安装流程同时生成系统级与控制项目 dry-run，合并 Review 后再安装。控制目录不得嵌套在 Core 或目标仓库；批次状态与 Core 源分离。
+3. Core 功能必须先正式发布到 origin/main。prepare 会认证 fetch 并固定完整 SHA，使用干净的独立快照；不把本地未提交实现当成正式源，也不在刷新失败时回退缓存。
+
+从任意 cwd 使用共享入口：
+
+```bash
+# 只读检查当前环境清单
+python3 /path/to/AGENTS/scripts/core_sync.py inspect
+
+# 准备控制 Task/Subtasks 与固定源；不写系统级/下游目标
+python3 /path/to/AGENTS/scripts/core_sync.py prepare --agent codex
+
+# prepare 返回 batch 路径后，生成中文编排执行树
+python3 /path/to/AGENTS/scripts/core_sync.py render --batch <batch-path>
+```
+
+建议让 Agent 执行：
+
+```text
+请使用当前环境的 core-sync，按共享清单更新全部启用的 repo。
+先检查配置与控制工作区，准备固定版本和 Subtasks，展示中文执行树供我 Review。
+编排获批后并行预览，汇总系统级与项目级具体提案，再等待我批准本轮变化。
+获批后按并发上限应用与验证，不自动暂存、提交或推送。
+```
+
+旧下游尚未发现新 Skill 时，可以显式要求 Agent 读取当前环境 `~/.config/agents-core/repos.json`，加载其中 `core_checkout` 指向的 `skills/core-sync/SKILL.md`。入口不依赖发起仓库已经安装新版 Skill，不自动写入全局发现配置。
+
+`core_sync.py` 提供目标检查、版本固定、预览分类、中文提案、批准摘要及 gate 校验；项目语义合并、真实 Orca 启动、回执核对和验证仍由 Agent 完成。输入变化会使旧批准失效；部分文件批准时不得把未完成安装记录成新基线。各项目不重复修改共享系统级文件，失败或阻塞目标单独报告。
 
 ### 初始化或更新后开始使用 Task
 
@@ -174,7 +215,10 @@ python3 scripts/init_project.py /path/to/project \
 ```text
 project/
 ├── AGENTS.md
-├── .agents/skills/task-runtime/
+├── .agents/skills/
+│   ├── task-runtime/
+│   ├── task-orchestration/
+│   └── core-sync/
 └── .tasks/
     ├── config.json
     ├── agent-core.json
