@@ -49,7 +49,7 @@ prepare 的写入仅限缓存/控制状态、控制工作区的 Task/Subtask 和
 
 先展示 `render --batch <batch>` 及控制 Task 的 schema 2 计划供 Review。按 task-orchestration 保存具体版本/摘要/编排批准，用 planctl 校验和计算候选；本工具不伪造编排批准。主 Agent 按 max_parallel 限制活动 worker 数，依 Orca 消息与唤醒机制推进，不后台轮询。
 
-worker 在配置中的目标仓库现有 workspace 内执行；控制 Subtask 入口位于共享控制工作区，Task 命令显式指定 `--root <control>`。目标仓库原有的 Task 不作为控制主 Task，不复制 Core 自用 Task。修改 Subtask 用 revision 检查。
+worker 在配置中的目标仓库现有 workspace 内执行；控制 Subtask 入口位于共享控制工作区，Task 命令显式指定 `--root <control>`。目标仓库原有的 Task 不作为控制主 Task，不复制 Core 自用 Task。修改 Subtask 用 revision 检查。Codex 的期望持久化会话名与 terminal 名分别保存；主协调者按 task-orchestration/session-naming 的优先级收集身份、核验和外部改名，禁止对运行中的 worker 注入 /status 或 /rename。命名待核验不改变更新 Review/应用状态。
 
 brief 至少包含：batch ID、配置 repo ID、控制 Task ID、固定 SHA/源快照、目标 workspace、该快照 README 的更新协议、允许文件范围、不得写共享系统级文件、预览里程碑与最终完成条件、回报/提问方式。
 

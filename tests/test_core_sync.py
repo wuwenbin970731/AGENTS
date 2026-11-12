@@ -112,6 +112,7 @@ class CoreSyncTest(unittest.TestCase):
         checked = json.loads(command(sys.executable, planctl, "check", parent.parent / "orchestration/plan.json"))
         self.assertEqual(checked["节点数"], 3)
         self.assertEqual(strategy["nodes"][1]["workspace"], "registry:a")
+        self.assertEqual(strategy["nodes"][1]["session_name"], strategy["nodes"][1]["terminal_title"])
         cli = self.control / ".tasks/bin/taskctl"
         self.assertEqual(json.loads(command(cli, "--root", self.control, "doctor"))["errors"], 0)
 
@@ -287,6 +288,9 @@ class CoreSyncTest(unittest.TestCase):
         self.assertEqual(list((self.a / ".tasks").glob("*/**/TASK.md")), [])
         manifest = json.loads((self.a / ".tasks/agent-core.json").read_text())
         self.assertIn(".agents/skills/task-orchestration/references/descendants.md", manifest["files"])
+        for asset in ("scripts/sessionctl.py", "references/session-naming.md"):
+            self.assertIn(".agents/skills/task-orchestration/" + asset, manifest["files"])
+            self.assertTrue((self.a / ".agents/skills/task-orchestration" / asset).exists())
         self.assertTrue((self.a / ".tasks/bin/taskctl").stat().st_mode & 0o111)
 
     def test_success_record_checks_manifest_and_actual_install(self):

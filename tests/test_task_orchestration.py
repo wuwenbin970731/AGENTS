@@ -60,6 +60,18 @@ class DescendantPlanTest(unittest.TestCase):
     def accepted_backend(self):
         self.runtime["nodes"].update({"S1.1": report("coordinator"), "S1.2": report("coordinator")})
 
+    def test_session_name_is_reviewed_but_naming_status_does_not_block(self):
+        self.assertIn("Codex 会话：示例 · S1.1", self.plan.render())
+        self.data["nodes"][2]["session_name"] = "项目 · S1.1 · 专用标题"
+        changed = approved(self.data)
+        self.assertNotEqual(changed.digest, self.plan.digest)
+        self.assertIn("Codex 会话：项目 · S1.1 · 专用标题", changed.render())
+        runtime = {"plan_digest": changed.digest, "nodes": {"S1.1": {"naming": {"status": "pending"}}}}
+        self.assertEqual(changed.frontier(runtime)["launch"], ["S1.1", "S1.2"])
+        self.data["nodes"][2]["session_name"] = "含有\n换行"
+        with self.assertRaises(ValueError):
+            Plan(self.data)
+
     def test_mixed_tree_advances_only_after_aggregate_and_user_acceptance(self):
         self.assertEqual(self.ready()["launch"], ["S1.1", "S1.2"])
         self.accepted_backend()

@@ -68,6 +68,7 @@ Keep `plan_version` for scheduling/content changes distinct from `revision` for 
 Array order is execution order. Store authorization as `planned` or `authorized`, with a short basis referencing the user's instruction; do not store chat transcripts. Each attempt has:
 
 - `attempt_id`, `state`, `created_at`, `updated_at`;
+- `naming`: desired session name, identity marker, source/proof reference, provider thread ID, pending/verified/conflict status and read-back timestamp; see [session-naming.md](session-naming.md). Keep private store references rather than raw launch data.
 - `binding`: backend, workspace selector, terminal handle, Agent session/handle when available, Orca run/task/dispatch IDs and launch operation/request IDs when available;
 - `result`: outcome (`succeeded`/`failed`), evidence references, blockers, or null;
 - `acceptance`: status (`pending`/`accepted`/`rejected`), actor (`user`/`coordinator`), basis, timestamp;
@@ -102,13 +103,16 @@ For each eligible task:
 2. Select the existing workspace, terminal title, Agent and brief. Verify current CLI support for terminal surface, naming and keeping terminals open. Load `references/low-level-topology.md` when composing a terminal and worker binding rather than using the high-level launch. Resolve custom Agent commands through Orca's configuration/guide; never invent executable arguments from an Agent name.
 3. Save `launching` immediately before the external operation. Record each successfully created resource before the next external step (e.g. terminal creation before dispatch). Follow the version-matched receipt and store operation IDs. Do not paste the same prompt again to prove delivery.
 4. Save exact returned bindings. Set `running` only when launch/dispatch is confirmed by Orca; if evidence proves only input acceptance, record that limit and continue the documented observation path. Title and terminal surface must match the plan; a chat is a mismatch, not success.
-5. Keep the terminal available for user inspection, using documented keep-open support. Report its label and stable handle. End the coordinating turn when Orca instructs it to wait; let Orca wake the coordinator.
+5. For Codex, resolve the exact thread binding and perform best-effort persistent naming as soon as it is available, independently of worker progress. A normal resumed session reuses its verified record; a new session requires a new attempt/binding. Read [session-naming.md](session-naming.md) before identity initialization or naming. Do not treat terminal title, orchestration task ID, or session-tree root ID as a provider thread ID.
+6. Keep the terminal available for user inspection, using documented keep-open support. Report its label and stable handle. End the coordinating turn when Orca instructs it to wait; let Orca wake the coordinator.
 
 The worker brief must be self-contained enough to begin without the parent's full conversation:
 
 ```text
 Persistent Task: <ID and TASK.md path relative to project>
 Plan / attempt: <IDs; coordinator owns the plan record>
+Codex naming: <reviewed name, random attempt marker, identity-helper/spec location if needed>
+Identity initialization: <send structured thread identity once through Orca, continue work without waiting; never TUI /status or /rename>
 Goal and allowed edits: <specific scope, excluded shared resources>
 Completion criteria: <observable conditions and evidence>
 Dependencies provided: <accepted output contracts and exact evidence pointers>

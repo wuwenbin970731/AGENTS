@@ -46,6 +46,11 @@ class Plan:
                     and all(isinstance(x, str) and x.strip() for x in row["completion_criteria"]), f"{key} 缺少验收条件列表")
             if not row["children"]:
                 require(all(isinstance(row.get(x), str) and row[x].strip() for x in ("agent", "terminal_title", "workspace")), f"{key} 缺少 Agent、终端名称或工作区")
+        for key, row in self.nodes.items():
+            if "session_name" in row:
+                require(isinstance(row["session_name"], str) and row["session_name"].strip()
+                        and len(row["session_name"]) <= 200 and not any(ord(c) < 32 for c in row["session_name"]),
+                        f"{key} Codex 会话名称无效")
         self.root = data.get("root_task")
         require(self.root in self.nodes, "找不到根 Task")
         self.parent, self.order, self.mode, self.complete = {}, [], {}, {}
@@ -203,6 +208,8 @@ class Plan:
         for key in self.order:
             n = self.nodes[key]
             launch = "主 Agent 协调，不创建终端" if n["children"] else "；".join(f"{label}：{n.get(k) or '未指定'}" for k, label in (("agent", "Agent"), ("terminal_title", "终端"), ("workspace", "工作区"), ("model", "模型"), ("effort", "推理强度")))
+            if not n["children"] and n["agent"].lower() == "codex":
+                launch += "；Codex 会话：" + n.get("session_name", n["terminal_title"])
             lines.append("| " + " | ".join(clean(x) for x in (key, "、".join(n.get("depends_on", [])) or "无", launch, "；".join(n["completion_criteria"]))) + " |")
         if self.external:
             lines += ["", "外部依赖（启动前重新核对）："]

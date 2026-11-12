@@ -25,6 +25,12 @@
 
 仓库文件是规则和实现源，不构成覆盖目标项目已有文件的授权。
 
+### Orca 中的 Codex 会话名称
+
+使用 `task-orchestration` 启动 Codex Subtask 时，中文执行树会展示 terminal 名与持久化会话名；会话名默认与 terminal 名一致，也可用 `session_name` 单独指定。主 Agent 获得可靠 thread 绑定后立即从外部命名，不向运行中的终端输入 `/status` 或 `/rename`。
+
+命名来源依次为原生回执、worker 初始化回传、已开启且证据完整的索引。命名暂不可用不影响业务；恢复时复用已核验绑定，保留发现的人工改名。工具与失败恢复协议见 [Codex 无打断命名](skills/task-orchestration/references/session-naming.md)，由 `scripts/sessionctl.py` 执行。本机已有实测，SSH 和其他 Codex 版本仍需分别验证。
+
 ### 系统级（用户级）AGENTS.md
 
 首次初始化项目和后续同步已有项目时，都必须把系统级规则纳入同一轮更新。项目初始化器本身仍不越界修改用户目录，而是由工作流同时调用全局同步器和项目级工具，汇总两部分 dry-run 后交给用户一次 Review。未获得对本轮具体计划的确认前，即使没有冲突也不得写入。
@@ -146,13 +152,19 @@ python3 /path/to/AGENTS/scripts/core_sync.py prepare --agent codex
 python3 /path/to/AGENTS/scripts/core_sync.py render --batch <batch-path>
 ```
 
-建议让 Agent 执行：
+可在任意下游 repo 的 Agent 会话中复制以下指令（也适用于尚未安装新 Skill 的旧下游）：
 
 ```text
-请使用当前环境的 core-sync，按共享清单更新全部启用的 repo。
-先检查配置与控制工作区，准备固定版本和 Subtasks，展示中文执行树供我 Review。
-编排获批后并行预览，汇总系统级与项目级具体提案，再等待我批准本轮变化。
-获批后按并发上限应用与验证，不自动暂存、提交或推送。
+请读取当前执行环境 ~/.config/agents-core/repos.json，
+加载其中 core_checkout 指向的 skills/core-sync/SKILL.md。
+
+使用 Codex 更新清单中全部启用的 repo，最多并行 3 个。
+先检查配置和控制工作区；缺少首次准备时，展示具体提案供我确认。
+
+准备固定 Core 版本和各 repo 的 Subtask，
+展示中文执行树供我 Review。
+编排获批后并行预览，再汇总系统级与项目级更新提案。
+等我批准具体变化后再应用和验证，不自动提交或推送。
 ```
 
 旧下游尚未发现新 Skill 时，可以显式要求 Agent 读取当前环境 `~/.config/agents-core/repos.json`，加载其中 `core_checkout` 指向的 `skills/core-sync/SKILL.md`。入口不依赖发起仓库已经安装新版 Skill，不自动写入全局发现配置。

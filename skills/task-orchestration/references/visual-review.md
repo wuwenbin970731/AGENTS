@@ -34,7 +34,7 @@ Show, directly on nodes or in a linked compact legend/table:
 - Coordinator/aggregate versus execution role, and which nodes actually create terminals.
 - Serial order and parallel groups, human acceptance gates and automatic evidence-check gates. Plan Review approval and result acceptance are separate events.
 - Dependencies, including cross-branch constraints that a containment tree alone cannot show; expose unresolved dependencies, cycles, conflicting edits and other blockers before dispatch.
-- Resolved Agent, explicit model/effort if any, terminal name and workspace placement for execution nodes. Never fabricate private runtime handles before launch.
+- Resolved Agent, explicit model/effort if any, terminal name, Codex persistent session name and workspace placement for execution nodes. Never fabricate private runtime handles before launch.
 
 Do not present a truncated tree as complete. Use bounded Meta queries; if the limit prevents a complete plan, split into explicit batches or mark the Review incomplete and do not launch hidden work.
 

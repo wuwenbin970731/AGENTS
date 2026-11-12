@@ -327,6 +327,9 @@ def prepare(config, selected=None, agent=None, max_parallel=None):
                           "completion_criteria": ["预览只是里程碑；全部获批内容应用、验证并核对安装清单后才可回报完成"],
                           "agent": agent, "terminal_title": "Core同步 · " + repo["task"]["subtask_key"] + " · " + key,
                           "workspace": "registry:" + key})
+        if agent.lower() == "codex":
+            for node in nodes[1:]:
+                node["session_name"] = node["terminal_title"]
         write(root_directory / "orchestration/plan.json", {"schema": 2, "plan_version": 1, "root_task": parent["id"], "nodes": nodes,
                                                           "external_dependencies": external, "max_parallel": parallel})
         return {"batch": str(folder), "source_commit": commit, "task_id": parent["id"], "repos": report["repos"]}

@@ -42,7 +42,7 @@ python3 <skill-dir>/scripts/planctl.py ready <plan.json> --state <state.json>
 | review | status、plan_version、plan_digest、artifact、basis，批准时 status 为 approved |
 | authorization | state 为 authorized、basis 记录执行意图依据 |
 
-逐节点字段：`task_id`、`subtask_key`、`title`、`task_revision_at_plan`、`children`、`known_children`、`depends_on`、`completion_criteria`。按需添加 `mode`；叶子必须补 `agent`、`terminal_title`、`workspace`，模型与 effort 仅在明确选择后填写。按既有协议在独立状态资源中保存 `attempts` 及 bindings，脚本不从标题推断实例。
+逐节点字段：`task_id`、`subtask_key`、`title`、`task_revision_at_plan`、`children`、`known_children`、`depends_on`、`completion_criteria`。按需添加 `mode`；叶子必须补 `agent`、`terminal_title`、`workspace`，Codex 可选 `session_name`，缺省与 terminal_title 相同；它是持久化会话名，不能只重命名终端标签代替。模型与 effort 仅在明确选择后填写。按既有协议在独立状态资源中保存 `attempts` 及 bindings，脚本不从标题推断实例。
 
 可选 `acceptance_actor: user` 为自动串行/并行里的某项增加人工验收；不得设置 coordinator 来绕过上层验收串行。本轮根的最终汇总默认也由用户验收。
 
