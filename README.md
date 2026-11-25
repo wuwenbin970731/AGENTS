@@ -396,6 +396,8 @@ revision 不一致时命令以退出码 `3` 拒绝覆盖。调用方必须重新
 
 ### 跨会话绑定
 
+跨会话绑定用于恢复索引；Orca worker 的 terminal/chat 载体选择由 `skills/task-orchestration/` 管理。新编排 schema 3 支持从任意载体启动 terminal 或 chat，未指定时默认跟随已核实的发起会话。`planctl.py resolve` 在 Review 前冻结具体载体，恢复不重新解析；旧编排 schema 2 保持 terminal 语义。详见 [执行载体协议](skills/task-orchestration/references/surfaces.md)。Task 自身仍使用 schema 5。
+
 ```bash
 .tasks/bin/taskctl bind <task-id> --session <stable-session-id>
 .tasks/bin/taskctl current --session <stable-session-id>

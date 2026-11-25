@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -10,6 +11,53 @@ import sys
 
 MODES = {"manual-sequential": "验收串行", "auto-sequential": "自动串行", "parallel": "并行"}
 PHASES = {"pending", "launching", "running", "reported", "failed", "unknown"}
+SURFACES = {"terminal", "chat"}
+SURFACE_SOURCES = {"item", "plan", "current_session"}
+
+
+def resolve(data, current_surface=None, surface=None, current_source="user_declared"):
+    """Resolve a fresh schema 3 draft. Caller identity is verified outside this tool."""
+    require(isinstance(data, dict) and data.get("schema") == 3, "resolve 仅接受新 schema 3 草案；不自动迁移历史计划")
+    require(current_surface in SURFACES | {None}, "当前会话载体无效")
+    require(surface in SURFACES | {"same", None}, "整批载体无效")
+    require(current_source in {"runtime_verified", "user_declared"}, "当前会话来源无效")
+    review, authorization = data.get("review", {}), data.get("authorization", {})
+    require(isinstance(review, dict) and isinstance(authorization, dict), "Review 或授权记录无效")
+    require(not data.get("runtime") and review.get("status") != "approved"
+            and authorization.get("state") != "authorized", "不得重新解析已批准或已有执行记录的计划")
+    origin = data.get("origin", {})
+    require(isinstance(origin, dict), "发起会话记录无效")
+    require(not current_surface or origin.get("surface") in {None, "unknown", current_surface}, "发起会话载体证据冲突，请先核对")
+    result = copy.deepcopy(data)
+    defaults = result.setdefault("defaults", {})
+    require(isinstance(defaults, dict), "defaults 必须为对象")
+    chosen = surface if surface is not None else defaults.get("surface", "same")
+    require(chosen in SURFACES | {"same"}, "默认载体无效")
+    defaults["surface"] = chosen
+    result["origin"] = {"surface": current_surface or "unknown",
+                        "source": current_source if current_surface else "unknown"}
+    rows = result.get("nodes")
+    require(isinstance(rows, list), "缺少 nodes")
+    for row in rows:
+        require(isinstance(row, dict), "节点必须为对象")
+        require(not row.get("attempts") and "surface_source" not in row, "已有尝试或已解析节点不得重新解析")
+        if row.get("children"):
+            continue
+        requested = row.get("surface", "same")
+        require(requested in SURFACES | {"same"}, "节点载体无效")
+        if requested in SURFACES:
+            target, source = requested, "item"
+        elif chosen in SURFACES:
+            target, source = chosen, "plan"
+        else:
+            require(current_surface in SURFACES, "无法识别当前会话载体；请明确当前载体或目标 surface")
+            target, source = current_surface, "current_session"
+        row.update(surface=target, surface_source=source)
+    # Never carry a stale derived snapshot or approval into the new resolved draft.
+    result.pop("review", None)
+    result.pop("authorization", None)
+    Plan(result)
+    return result
 
 
 def require(condition, message):
@@ -25,8 +73,15 @@ def strings(value, label):
 
 class Plan:
     def __init__(self, data):
-        require(isinstance(data, dict) and data.get("schema") == 2, "只支持编排计划 schema 2")
+        require(isinstance(data, dict) and data.get("schema") in {2, 3}, "只支持编排计划 schema 2 / 3")
         self.data = data
+        self.schema = data["schema"]
+        if self.schema == 3:
+            origin, defaults = data.get("origin"), data.get("defaults")
+            require(isinstance(origin, dict) and origin.get("surface") in SURFACES | {"unknown"}
+                    and origin.get("source") in {"runtime_verified", "user_declared", "unknown"}, "缺少有效发起会话载体及来源")
+            require((origin["surface"] == "unknown") == (origin["source"] == "unknown"), "发起会话未知状态与来源冲突")
+            require(isinstance(defaults, dict) and defaults.get("surface") in SURFACES | {"same"}, "缺少有效默认载体策略")
         require(isinstance(data.get("plan_version"), int) and data["plan_version"] > 0, "缺少 plan_version")
         rows = data.get("nodes")
         require(isinstance(rows, list) and 1 < len(rows) <= 1000, "计划须包含根与后代，最多 1000 节点")
@@ -45,7 +100,18 @@ class Plan:
             require(isinstance(row.get("completion_criteria"), list) and row["completion_criteria"]
                     and all(isinstance(x, str) and x.strip() for x in row["completion_criteria"]), f"{key} 缺少验收条件列表")
             if not row["children"]:
-                require(all(isinstance(row.get(x), str) and row[x].strip() for x in ("agent", "terminal_title", "workspace")), f"{key} 缺少 Agent、终端名称或工作区")
+                title_key = "display_title" if self.schema == 3 else "terminal_title"
+                require(all(isinstance(row.get(x), str) and row[x].strip() for x in ("agent", title_key, "workspace")), f"{key} 缺少 Agent、载体名称或工作区")
+                if self.schema == 3:
+                    require(row.get("surface") in SURFACES and row.get("surface_source") in SURFACE_SOURCES, f"{key} 缺少已解析载体或来源")
+                    source = row["surface_source"]
+                    if source == "current_session":
+                        require(defaults["surface"] == "same" and row["surface"] == origin["surface"], f"{key} 默认跟随结果与来源不一致")
+                    if source == "plan":
+                        require(row["surface"] == defaults["surface"], f"{key} 整批载体与解析结果不一致")
+                    require("terminal_title" not in row, f"{key} schema 3 使用 display_title，不混用 terminal_title")
+            elif self.schema == 3:
+                require(not any(x in row for x in ("surface", "surface_source", "display_title")), f"{key} 协调汇总节点不创建执行实例")
         for key, row in self.nodes.items():
             if "session_name" in row:
                 require(isinstance(row["session_name"], str) and row["session_name"].strip()
@@ -114,14 +180,43 @@ class Plan:
             return "user"
         return self.nodes[key].get("acceptance_actor") or "coordinator"
 
+    def surface(self, key):
+        return self.nodes[key]["surface"] if self.schema == 3 else "terminal"
+
+    def display_title(self, key):
+        return self.nodes[key]["display_title" if self.schema == 3 else "terminal_title"]
+
+    def resource_pending(self, key, state):
+        """A created instance must be reconciled even before dispatch is recorded."""
+        if self.schema != 3 or self.nodes[key]["children"]:
+            return False
+        attempts = state.get("attempts", [])
+        require(isinstance(attempts, list) and all(isinstance(a, dict) for a in attempts), f"{key} attempts 无效")
+        attempt = attempts[-1] if attempts else {}
+        requested, actual = attempt.get("requested_surface"), attempt.get("actual_surface")
+        if requested is not None:
+            require(requested == self.surface(key), f"{key} attempt 请求载体与批准计划不一致")
+        if actual is not None:
+            require(actual in SURFACES, f"{key} attempt 实际载体无效")
+        binding = attempt.get("binding", {})
+        require(isinstance(binding, dict), f"{key} binding 无效")
+        if actual == "chat":
+            require(not binding.get("terminal_handle"), f"{key} chat 不得填入 terminal_handle")
+        if state.get("phase") in {"running", "reported"}:
+            require(requested == actual == self.surface(key) and binding.get("dispatch_id"), f"{key} 缺少匹配载体与受监督 dispatch 绑定")
+        return bool(actual or any(binding.get(x) for x in ("launch_operation_id", "agent_handle", "orca_session_id", "terminal_handle", "dispatch_id")))
+
     def frontier(self, runtime):
         require(isinstance(runtime, dict) and runtime.get("plan_digest") == self.digest, "执行状态与计划摘要不匹配")
         states = runtime.get("nodes", {})
         require(isinstance(states, dict) and set(states) <= set(self.nodes), "执行状态包含未知节点")
         require(isinstance(self.data.get("review", {}), dict) and isinstance(self.data.get("authorization", {}), dict), "Review 或授权记录无效")
         accepted = set()
+        resources = set()
         for key, state in states.items():
             require(isinstance(state, dict) and state.get("phase", "pending") in PHASES, f"{key} 执行阶段无效")
+            if self.resource_pending(key, state):
+                resources.add(key)
             acceptance = state.get("acceptance", {})
             require(isinstance(acceptance, dict) and acceptance.get("status", "pending") in {"pending", "accepted", "rejected"}, f"{key} 验收状态无效")
             if state.get("phase") == "reported":
@@ -170,6 +265,8 @@ class Plan:
                 result["blocked"].append({"task_id": key, "reason": "失败、状态不明或验收未通过，须先恢复"})
             elif phase in {"launching", "running"}:
                 result["blocked"].append({"task_id": key, "reason": "执行中，不重复启动"})
+            elif phase == "pending" and key in resources:
+                result["blocked"].append({"task_id": key, "reason": "已有创建资源，须先核对并恢复绑定，不重复启动"})
             elif phase == "reported":
                 if not state.get("evidence"):
                     result["blocked"].append({"task_id": key, "reason": "成功回报缺少证据，先补充交付证据"})
@@ -189,7 +286,7 @@ class Plan:
 
         def walk(key, prefix="", connector=""):
             node = self.nodes[key]
-            role = "协调汇总" if node["children"] else "执行；创建终端"
+            role = "协调汇总" if node["children"] else "执行；创建" + ("终端" if self.surface(key) == "terminal" else "聊天")
             mode = MODES[self.mode[key]] + ("；显式配置" if "mode" in node else "；默认或继承")
             gate = "用户验收" if self.actor(key) == "user" else "协调者检查"
             coverage = "完整覆盖" if self.complete[key] else "部分覆盖；不代表整个 Task 完成"
@@ -204,12 +301,16 @@ class Plan:
                 lines.append(next_prefix + "    未选中：" + "、".join(clean(x) for x in sorted(omitted)))
 
         walk(self.root)
-        lines += ["```", "", "| 节点 | 依赖 | Agent / 终端 / 工作区 | 验收条件 |", "|---|---|---|---|"]
+        lines += ["```", "", "| 节点 | 依赖 | Agent / 载体 / 名称 / 工作区 | 验收条件 |", "|---|---|---|---|"]
         for key in self.order:
             n = self.nodes[key]
-            launch = "主 Agent 协调，不创建终端" if n["children"] else "；".join(f"{label}：{n.get(k) or '未指定'}" for k, label in (("agent", "Agent"), ("terminal_title", "终端"), ("workspace", "工作区"), ("model", "模型"), ("effort", "推理强度")))
+            launch = "主 Agent 协调，不创建实例"
+            if not n["children"]:
+                launch = f"载体：{self.surface(key)}；名称：{self.display_title(key)}；" + "；".join(f"{label}：{n.get(k) or '未指定'}" for k, label in (("agent", "Agent"), ("workspace", "工作区"), ("model", "模型"), ("effort", "推理强度")))
+                if self.schema == 3:
+                    launch += "；载体来源：" + {"item": "单节点指定", "plan": "整批指定", "current_session": "跟随发起会话"}[n["surface_source"]]
             if not n["children"] and n["agent"].lower() == "codex":
-                launch += "；Codex 会话：" + n.get("session_name", n["terminal_title"])
+                launch += "；Codex 会话：" + n.get("session_name", self.display_title(key))
             lines.append("| " + " | ".join(clean(x) for x in (key, "、".join(n.get("depends_on", [])) or "无", launch, "；".join(n["completion_criteria"]))) + " |")
         if self.external:
             lines += ["", "外部依赖（启动前重新核对）："]
@@ -220,12 +321,20 @@ class Plan:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("check", "render", "ready"))
+    parser.add_argument("command", choices=("resolve", "check", "render", "ready"))
     parser.add_argument("plan", type=Path)
     parser.add_argument("--state", type=Path, help="ready 必须提供，首次执行也需显式空 nodes 状态")
+    parser.add_argument("--current-surface", choices=sorted(SURFACES), help="resolve 使用的已核实当前载体；不自动探测")
+    parser.add_argument("--current-source", choices=("runtime_verified", "user_declared"), default="user_declared")
+    parser.add_argument("--surface", choices=("same", "terminal", "chat"), help="resolve 的整批覆盖")
     args = parser.parse_args()
     try:
-        plan = Plan(json.loads(args.plan.read_text()))
+        data = json.loads(args.plan.read_text())
+        if args.command == "resolve":
+            print(json.dumps(resolve(data, args.current_surface, args.surface, args.current_source), ensure_ascii=False, indent=2))
+            return 0
+        require(args.current_surface is None and args.surface is None, "当前载体只用于 resolve；不得在恢复时重新解析")
+        plan = Plan(data)
         if args.command == "render":
             print(plan.render(), end="")
         elif args.command == "ready":

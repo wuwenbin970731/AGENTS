@@ -32,24 +32,26 @@
 
 ```text
 python3 <entry> inspect --config <registry.json>
-python3 <entry> prepare --config <registry.json> [--repo project-a --repo project-b] [--agent codex] [--max-parallel 3]
+python3 <entry> prepare --config <registry.json> [--repo project-a --repo project-b] [--agent codex] [--max-parallel 3] --current-surface <已核实的 terminal|chat> [--surface same|terminal|chat]
 ```
+
+prepare 默认 surface=same；由协调者先核实当前 caller，再提供 --current-surface（运行时核实可加 --current-source runtime_verified）；工具不自动探测。也可 --surface terminal/chat 显式选择，未知来源且未显式选择时在任何准备副作用前拒绝。配置默认值不能静默覆盖当前会话；已存批次恢复不重新解析。
 
 prepare 读取清单、验证控制工作区、串行持有独立准备锁以防重复批次，刷新认证 origin/main 并固定完整 SHA。不回退历史缓存；认证/fetch/基线读取失败停止。它创建独立干净 Git 快照，以该正式提交的 README/COPY_MAP 作为本轮协议和源；本地 Core 中未提交修改不会作为 theirs。
 
-origin/main 必须已经发布本功能（core-sync Skill 以及 task-orchestration/planctl）；否则明确停止，不从 dirty 工作树补缺失文件。因此开发完成不等于新功能已在远端可用，正式使用需先经用户批准发布 Core。
+origin/main 必须已经发布本功能（core-sync Skill 以及支持 schema 3/resolve 的 task-orchestration/planctl）；否则明确停止，不从 dirty 工作树补缺失文件。因此开发完成不等于新功能已在远端可用，正式使用需先经用户批准发布 Core。
 
 prepare 的写入仅限缓存/控制状态、控制工作区的 Task/Subtask 和 Core 检出的 fetch 引用，不写系统级/下游文件。状态位于 `<control>/.tasks/.state/core-sync/<batch-id>/`，返回的 batch 路径用于以后所有命令。源 Git 快照单独位于该批次的 source 子目录。源内容/HEAD/origin 后续改变或 config 漂移时停止。
 
-创建的主 Task 包含中文执行树与 schema 2 策略的 Context Map。每目标一个稳定 Subtask。workspace 的 `registry:<id>` 是冻结配置定位引用，不是 Orca CLI selector；解析并核对当前环境 workspace 后才派发。blocked 项有显式未满足依赖，不启动 worker。
+创建的主 Task 包含中文执行树与 schema 3 策略的 Context Map。每目标一个稳定 Subtask。workspace 的 `registry:<id>` 是冻结配置定位引用，不是 Orca CLI selector；解析并核对当前环境 workspace 后才派发。blocked 项有显式未满足依赖，不启动 worker。
 
 同一实际项目或共享系统级目标不得同时属于两个未关闭批次。准备过程 journal 记录已创建 Task；中断时按该 journal 和 Task Meta 恢复，不重复 prepare。残留 prepare.lock 须先核对旧协调进程再人工解除，不自动抢占。缺少正式 batch.json 的失败准备也可在确认无 worker 后 close 登记；不自动删除其证据或 Task。
 
 ## 4. 编排批准和 worker 生命周期
 
-先展示 `render --batch <batch>` 及控制 Task 的 schema 2 计划供 Review。按 task-orchestration 保存具体版本/摘要/编排批准，用 planctl 校验和计算候选；本工具不伪造编排批准。主 Agent 按 max_parallel 限制活动 worker 数，依 Orca 消息与唤醒机制推进，不后台轮询。
+先展示 `render --batch <batch>` 及控制 Task 的 schema 3 计划（旧批次仍按原 schema 2 恢复）供 Review。按 task-orchestration 保存具体版本/摘要/编排批准，用 planctl 校验和计算候选；本工具不伪造编排批准。主 Agent 按 max_parallel 限制活动 worker 数，依 Orca 消息与唤醒机制推进，不后台轮询。
 
-worker 在配置中的目标仓库现有 workspace 内执行；控制 Subtask 入口位于共享控制工作区，Task 命令显式指定 `--root <control>`。目标仓库原有的 Task 不作为控制主 Task，不复制 Core 自用 Task。修改 Subtask 用 revision 检查。Codex 的期望持久化会话名与 terminal 名分别保存；主协调者按 task-orchestration/session-naming 的优先级收集身份、核验和外部改名，禁止对运行中的 worker 注入 /status 或 /rename。命名待核验不改变更新 Review/应用状态。
+worker 在配置中的目标仓库现有 workspace 内执行；控制 Subtask 入口位于共享控制工作区，Task 命令显式指定 `--root <control>`。目标仓库原有的 Task 不作为控制主 Task，不复制 Core 自用 Task。修改 Subtask 用 revision 检查。Codex 的期望持久化会话名与 terminal/chat 展示名分别保存；主协调者按 task-orchestration/session-naming 的优先级收集身份、核验和外部改名，禁止对运行中的 worker 注入 /status 或 /rename。命名待核验不改变更新 Review/应用状态。
 
 brief 至少包含：batch ID、配置 repo ID、控制 Task ID、固定 SHA/源快照、目标 workspace、该快照 README 的更新协议、允许文件范围、不得写共享系统级文件、预览里程碑与最终完成条件、回报/提问方式。
 
@@ -121,7 +123,7 @@ record-global 要求实际文件内容/模式与获批预期完全一致。项�
 
 项目实际执行后可使用 `record-project --batch <batch> --repo <id> --result-file <result.json>` 记录结果。result 包含 outcome（updated/unchanged/partial/failed/blocked）、证据入口 evidence，成功/部分完成还需 checks 列表（command 与实际 returncode）。命令文本仅作证据，不自动执行。工具检查获批范围外的已观察文件未变、完整成功时实际 manifest 符合新源及文件存在/入口模式、部分完成时基线未推进；仍不能证明检查确实执行或语义合并正确。
 
-每 repo 的运行状态、attempt、真实 workspace/terminal/dispatch、输入摘要、批准、验证和错误记录在私有状态；Task 只作脱敏恢复索引。脚本不提供证据真实性或测试执行证明，最终报告只能引用实际观察。
+每 repo 的运行状态、attempt、真实 workspace/surface/instance/dispatch、输入摘要、批准、验证和错误记录在私有状态；Task 只作脱敏恢复索引。脚本不提供证据真实性或测试执行证明，最终报告只能引用实际观察。
 
 配置/路径、固定源、目标文件（含模式）、附加观察文件或提案变化时，gate 拒绝旧批准。已经部分应用导致旧输入失效时，先保留 diff、确认旧 worker，再生成剩余内容预览并重新 Review；不回滚用户文件，不抹掉旧证据。配置已改或源损坏时不能用旧批次应用，需明确关闭后重新准备。
 

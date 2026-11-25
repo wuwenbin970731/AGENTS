@@ -250,7 +250,8 @@ def fill_task(source, control, folder, meta, body):
         temporary.unlink(missing_ok=True)
 
 
-def prepare(config, selected=None, agent=None, max_parallel=None):
+def prepare(config, selected=None, agent=None, max_parallel=None, surface="same", current_surface=None,
+            current_source="user_declared"):
     control_config = load(safe(config.control, ".tasks/config.json"))
     need(control_config.get("managed_by") == MARKER and control_config.get("task_schema") == 5,
          "请先按 README 完成控制工作区的首次安装 Review")
@@ -259,6 +260,10 @@ def prepare(config, selected=None, agent=None, max_parallel=None):
     parallel = config.parallel if max_parallel is None else max_parallel
     need(isinstance(agent, str) and agent.strip(), "先配置或用 --agent 明确本轮 Agent，不推断当前模型")
     need(type(parallel) is int and 1 <= parallel <= 32, "本轮 max_parallel 须为 1 至 32")
+    need(surface in {"same", "terminal", "chat"} and current_surface in {None, "terminal", "chat"}, "载体选择无效")
+    need(current_source in {"runtime_verified", "user_declared"}, "当前会话来源无效")
+    need(surface != "same" or current_surface is not None, "请提供已核实的 --current-surface 或显式 --surface；不从环境变量名猜测当前载体")
+    resolved_surface = current_surface if surface == "same" else surface
     report = inspect(config, selected)
     need(any(r["status"] == "ready" for r in report["repos"]), "没有可预览目标")
     store = safe(config.control, ".tasks/.state/core-sync")
@@ -285,6 +290,8 @@ def prepare(config, selected=None, agent=None, max_parallel=None):
         copy_map(source)
         need((source / "skills/core-sync/SKILL.md").is_file() and (source / "skills/task-orchestration/scripts/planctl.py").is_file(),
              "origin/main 尚未发布批量同步能力，先发布已验证版本；不使用 dirty 工作树替代")
+        plan_tools = runpy.run_path(str(source / "skills/task-orchestration/scripts/planctl.py"))
+        need(callable(plan_tools.get("resolve")), "origin/main 尚未发布双模式编排 schema 3；不使用 dirty 工作树替代")
         readme = (source / "README.md").read_text()
         heading = "### Core 更新后同步已有项目"
         need(heading in readme, "固定版本缺少 README 更新协议")
@@ -295,7 +302,8 @@ def prepare(config, selected=None, agent=None, max_parallel=None):
         write(folder / "preparation.json", journal)
         batch = {"schema": 1, "id": batch_id, "environment": environment(), "config_path": str(config.path), "config_digest": config.fingerprint,
                  "source_commit": commit, "source_origin": origin, "source": str(source), "control": str(config.control), "task": parent,
-                 "agent": agent, "max_parallel": parallel, "globals": config.globals, "repos": {}}
+                 "agent": agent, "surface": resolved_surface, "surface_policy": surface,
+                 "current_surface": current_surface, "max_parallel": parallel, "globals": config.globals, "repos": {}}
         for row in report["repos"]:
             child = task(source, config.control, "new", "同步 " + row["id"], "--slug", "sync-" + row["id"], "--parent", parent["id"], "--summary", "预览与合并 Review 后同步该项目，保留本地专属内容并验证", "--status", "pending")
             journal["created_tasks"].append(child["id"])
@@ -325,13 +333,15 @@ def prepare(config, selected=None, agent=None, max_parallel=None):
             nodes.append({"task_id": repo["task"]["id"], "subtask_key": repo["task"]["subtask_key"], "title": "同步 " + key,
                           "children": [], "known_children": [], "depends_on": deps,
                           "completion_criteria": ["预览只是里程碑；全部获批内容应用、验证并核对安装清单后才可回报完成"],
-                          "agent": agent, "terminal_title": "Core同步 · " + repo["task"]["subtask_key"] + " · " + key,
+                          "agent": agent, "display_title": "Core同步 · " + repo["task"]["subtask_key"] + " · " + key,
                           "workspace": "registry:" + key})
         if agent.lower() == "codex":
             for node in nodes[1:]:
-                node["session_name"] = node["terminal_title"]
-        write(root_directory / "orchestration/plan.json", {"schema": 2, "plan_version": 1, "root_task": parent["id"], "nodes": nodes,
-                                                          "external_dependencies": external, "max_parallel": parallel})
+                node["session_name"] = node["display_title"]
+        plan = plan_tools["resolve"]({"schema": 3, "plan_version": 1, "root_task": parent["id"], "nodes": nodes,
+                                      "external_dependencies": external, "max_parallel": parallel},
+                                     current_surface, surface, current_source)
+        write(root_directory / "orchestration/plan.json", plan)
         return {"batch": str(folder), "source_commit": commit, "task_id": parent["id"], "repos": report["repos"]}
 
 
@@ -571,7 +581,7 @@ class Batch:
             lines.append("│   └── " + key)
         lines.append("├── 项目预览 [并行；最多 " + str(self.data["max_parallel"]) + " 个 worker]")
         for key, repo in self.data["repos"].items():
-            lines.append(f"│   ├── {repo['task']['subtask_key']} {key} [Agent：{self.data['agent']}；终端：Core同步 · {repo['task']['subtask_key']} · {key}；{('可预览' if repo['initial']['status'] == 'ready' else '阻塞，不启动')}]")
+            lines.append(f"│   ├── {repo['task']['subtask_key']} {key} [Agent：{self.data['agent']}；载体：{self.data.get('surface', 'terminal')}；名称：Core同步 · {repo['task']['subtask_key']} · {key}；{('可预览' if repo['initial']['status'] == 'ready' else '阻塞，不启动')}]")
         lines += ["├── 合并更新提案 [用户 Review；可批准部分目标/文件]", "├── 获批系统级变化 [主 Agent 应用、核对结果]", "└── 获批项目 [并行应用与验证；复用对应 Subtask]", "```", "", "编排批准与内容批准分开记录；blocked 目标不启动 worker。每个 worker 在其目标仓库执行，Subtask 入口保存在共享控制工作区。"]
         return "\n".join(lines) + "\n"
 
@@ -591,11 +601,15 @@ def main():
     parser.add_argument("--basis")
     parser.add_argument("--agent", help="prepare 的本轮 Agent 覆盖，不修改配置")
     parser.add_argument("--max-parallel", type=int, help="prepare 的本轮并发上限覆盖")
+    parser.add_argument("--surface", choices=("same", "terminal", "chat"), default="same", help="prepare 的目标载体；默认跟随当前会话")
+    parser.add_argument("--current-surface", choices=("terminal", "chat"), help="prepare 使用的已核实当前会话载体")
+    parser.add_argument("--current-source", choices=("runtime_verified", "user_declared"), default="user_declared")
     args = parser.parse_args()
     try:
         if args.command in {"inspect", "prepare"}:
             config = Config(args.config)
-            result = inspect(config, args.repo) if args.command == "inspect" else prepare(config, args.repo, args.agent, args.max_parallel)
+            result = inspect(config, args.repo) if args.command == "inspect" else prepare(config, args.repo, args.agent, args.max_parallel,
+                                                                                     args.surface, args.current_surface, args.current_source)
         else:
             need(args.batch is not None, "需要 --batch")
             if args.command == "close":

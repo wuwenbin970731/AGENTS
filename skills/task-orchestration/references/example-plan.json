@@ -1,5 +1,5 @@
 {
-  "schema": 2,
+  "schema": 3,
   "plan_version": 1,
   "root_task": "root",
   "nodes": [
@@ -51,9 +51,11 @@
       ],
       "depends_on": [],
       "agent": "codex",
-      "terminal_title": "示例编排 · S1.1 · 接口实现",
       "workspace": "current",
-      "task_revision_at_plan": 1
+      "task_revision_at_plan": 1,
+      "display_title": "示例编排 · S1.1 · 接口实现",
+      "surface": "terminal",
+      "surface_source": "item"
     },
     {
       "task_id": "S1.2",
@@ -66,9 +68,11 @@
       ],
       "depends_on": [],
       "agent": "codex",
-      "terminal_title": "示例编排 · S1.2 · 数据处理",
       "workspace": "current",
-      "task_revision_at_plan": 1
+      "task_revision_at_plan": 1,
+      "display_title": "示例编排 · S1.2 · 数据处理",
+      "surface": "chat",
+      "surface_source": "current_session"
     },
     {
       "task_id": "S2",
@@ -100,9 +104,11 @@
       ],
       "depends_on": [],
       "agent": "codex",
-      "terminal_title": "示例编排 · S2.1 · 页面实现",
       "workspace": "current",
-      "task_revision_at_plan": 1
+      "task_revision_at_plan": 1,
+      "display_title": "示例编排 · S2.1 · 页面实现",
+      "surface": "chat",
+      "surface_source": "current_session"
     },
     {
       "task_id": "S2.2",
@@ -115,10 +121,19 @@
       ],
       "depends_on": [],
       "agent": "codex",
-      "terminal_title": "示例编排 · S2.2 · 交互验证",
       "workspace": "current",
-      "task_revision_at_plan": 1
+      "task_revision_at_plan": 1,
+      "display_title": "示例编排 · S2.2 · 交互验证",
+      "surface": "chat",
+      "surface_source": "current_session"
     }
   ],
-  "external_dependencies": {}
+  "external_dependencies": {},
+  "origin": {
+    "surface": "chat",
+    "source": "user_declared"
+  },
+  "defaults": {
+    "surface": "same"
+  }
 }

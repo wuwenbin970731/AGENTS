@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -254,6 +255,165 @@ class DescendantPlanTest(unittest.TestCase):
             self.assertEqual(json.loads(ready.stdout)["launch"], ["S1.1", "S1.2"])
             missing = subprocess.run([sys.executable, str(SCRIPT), "ready", str(path)], text=True, capture_output=True)
             self.assertEqual(missing.returncode, 2)
+
+
+def surface_draft():
+    data = example()
+    data["schema"] = 3
+    for row in data["nodes"]:
+        if not row["children"]:
+            row["display_title"] = row.pop("terminal_title")
+    return data
+
+
+def bound_state(surface, phase="running"):
+    return {"phase": phase, "attempts": [{"requested_surface": surface, "actual_surface": surface,
+             "binding": {"agent_handle": "opaque-worker", "dispatch_id": "test-dispatch"}}]}
+
+
+class SurfacePlanTest(unittest.TestCase):
+    def test_four_combinations_and_default_same_are_pure(self):
+        for origin in ("terminal", "chat"):
+            for target in ("terminal", "chat"):
+                with self.subTest(origin=origin, target=target):
+                    draft = surface_draft()
+                    original = copy.deepcopy(draft)
+                    data = module.resolve(draft, origin, target)
+                    self.assertEqual(draft, original)
+                    plan = Plan(data)
+                    self.assertEqual(plan.surface("S1.1"), target)
+                    self.assertEqual(data["nodes"][2]["surface_source"], "plan")
+            default = module.resolve(surface_draft(), origin)
+            self.assertEqual(default["nodes"][2]["surface"], origin)
+            self.assertEqual(default["nodes"][2]["surface_source"], "current_session")
+
+    def test_item_override_and_mixed_surface_rendering(self):
+        draft = surface_draft()
+        draft["nodes"][2]["surface"] = "terminal"
+        data = module.resolve(draft, "terminal", "chat", "runtime_verified")
+        self.assertEqual(data["origin"], {"surface": "terminal", "source": "runtime_verified"})
+        self.assertEqual(data["nodes"][2]["surface_source"], "item")
+        plan = approved(data)
+        self.assertIn("创建终端", plan.render())
+        self.assertIn("创建聊天", plan.render())
+        self.assertIn("载体：chat", plan.render())
+        self.assertEqual(plan.frontier({"plan_digest": plan.digest, "nodes": {}})["launch"], ["S1.1", "S1.2"])
+
+    def test_unknown_origin_requires_explicit_targets(self):
+        with self.assertRaisesRegex(ValueError, "无法识别"):
+            module.resolve(surface_draft())
+        data = module.resolve(surface_draft(), surface="chat")
+        self.assertEqual(data["origin"], {"surface": "unknown", "source": "unknown"})
+        draft = surface_draft()
+        for row in draft["nodes"]:
+            if not row["children"]:
+                row["surface"] = "terminal"
+        self.assertEqual(Plan(module.resolve(draft)).surface("S1.1"), "terminal")
+
+    def test_conflicting_caller_evidence_and_malformed_review_are_rejected(self):
+        draft = surface_draft()
+        draft["origin"] = {"surface": "terminal", "source": "runtime_verified"}
+        with self.assertRaisesRegex(ValueError, "证据冲突"):
+            module.resolve(draft, "chat")
+        draft.pop("origin")
+        draft["review"] = None
+        with self.assertRaisesRegex(ValueError, "Review"):
+            module.resolve(draft, "chat")
+
+    def test_invalid_unresolved_and_conflicting_origins_rejected(self):
+        for field, value in (("surface", "same"), ("surface", "bogus"), ("surface_source", "bogus"), ("display_title", "")):
+            data = module.resolve(surface_draft(), "chat")
+            data["nodes"][2][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                Plan(data)
+        data = module.resolve(surface_draft(), "chat")
+        data["origin"]["surface"] = "terminal"
+        with self.assertRaisesRegex(ValueError, "来源不一致"):
+            Plan(data)
+        for bad in ("auto", ""):
+            with self.assertRaises(ValueError):
+                module.resolve(surface_draft(), bad)
+        data = module.resolve(surface_draft(), "chat")
+        data["nodes"][0]["surface"] = "chat"
+        with self.assertRaisesRegex(ValueError, "协调汇总"):
+            Plan(data)
+
+    def test_schema2_digest_and_terminal_semantics_are_unchanged(self):
+        data = example()
+        canonical = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        self.assertEqual(Plan(data).digest, hashlib.sha256(canonical).hexdigest())
+        self.assertEqual(Plan(data).surface("S1.1"), "terminal")
+        self.assertEqual(Plan(data).display_title("S1.1"), data["nodes"][2]["terminal_title"])
+        with self.assertRaisesRegex(ValueError, "不自动迁移"):
+            module.resolve(data, "chat")
+
+    def test_resuming_never_re_resolves_or_keeps_stale_approval(self):
+        data = module.resolve(surface_draft(), "terminal")
+        for candidate in (data, approved(copy.deepcopy(data)).data):
+            with self.assertRaises(ValueError):
+                module.resolve(candidate, "chat")
+        draft = surface_draft()
+        draft["authorization"] = {"state": "authorized"}
+        with self.assertRaisesRegex(ValueError, "已批准"):
+            module.resolve(draft, "chat")
+
+    def test_surface_change_invalidates_review_and_state(self):
+        data = module.resolve(surface_draft(), "terminal", "terminal")
+        original = approved(data)
+        data["nodes"][2].update(surface="chat", surface_source="item")
+        plan = Plan(data)
+        self.assertNotEqual(plan.digest, original.digest)
+        with self.assertRaisesRegex(ValueError, "摘要不匹配"):
+            plan.frontier({"plan_digest": original.digest, "nodes": {}})
+        self.assertEqual(plan.frontier({"plan_digest": plan.digest, "nodes": {}})["launch"], [])
+
+    def test_created_resource_blocks_duplicate_start_even_before_dispatch(self):
+        plan = approved(module.resolve(surface_draft(), "chat"))
+        for binding in ({"agent_handle": "created-chat"}, {"launch_operation_id": "maybe-created"}):
+            state = {"plan_digest": plan.digest, "nodes": {"S1.1": {
+                "phase": "pending", "attempts": [{"requested_surface": "chat", "binding": binding}]}}}
+            self.assertEqual(plan.frontier(state)["launch"], ["S1.2"])
+            self.assertTrue(any("已有创建资源" in x["reason"] for x in plan.frontier(state)["blocked"]))
+
+    def test_wrong_surface_or_unbound_worker_cannot_claim_running(self):
+        plan = approved(module.resolve(surface_draft(), "chat"))
+        for entry in ({"phase": "running"}, bound_state("terminal")):
+            with self.assertRaises(ValueError):
+                plan.frontier({"plan_digest": plan.digest, "nodes": {"S1.1": entry}})
+        state = bound_state("chat")
+        self.assertEqual(plan.frontier({"plan_digest": plan.digest, "nodes": {"S1.1": state}})["launch"], ["S1.2"])
+        state["attempts"][0]["binding"]["terminal_handle"] = "invalid-chat-pty"
+        with self.assertRaisesRegex(ValueError, "terminal_handle"):
+            plan.frontier({"plan_digest": plan.digest, "nodes": {"S1.1": state}})
+
+    def test_fallback_keeps_resource_blocked_without_dispatching(self):
+        plan = approved(module.resolve(surface_draft(), "chat"))
+        state = bound_state("chat", "launching")
+        state["attempts"][0].update(actual_surface="terminal", binding={"agent_handle": "fallback"})
+        result = plan.frontier({"plan_digest": plan.digest, "nodes": {"S1.1": state}})
+        self.assertNotIn("S1.1", result["launch"])
+        state["phase"] = "running"
+        with self.assertRaisesRegex(ValueError, "匹配载体"):
+            plan.frontier({"plan_digest": plan.digest, "nodes": {"S1.1": state}})
+
+    def test_report_and_acceptance_still_need_matching_binding_and_evidence(self):
+        plan = approved(module.resolve(surface_draft(), "chat"))
+        state = bound_state("chat", "reported")
+        state.update(report("coordinator"))
+        runtime = {"plan_digest": plan.digest, "nodes": {"S1.1": state}}
+        self.assertEqual(plan.frontier(runtime)["launch"], ["S1.2"])
+        state["evidence"] = []
+        with self.assertRaisesRegex(ValueError, "证据"):
+            plan.frontier(runtime)
+
+    def test_resolve_cli_outputs_plan_without_writing_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "draft.json"
+            path.write_text(json.dumps(surface_draft()))
+            before = path.read_bytes()
+            result = subprocess.run([sys.executable, str(SCRIPT), "resolve", str(path), "--current-surface", "chat"], text=True, capture_output=True, check=True)
+            self.assertEqual(Plan(json.loads(result.stdout)).surface("S1.1"), "chat")
+            self.assertEqual(path.read_bytes(), before)
 
 
 if __name__ == "__main__":

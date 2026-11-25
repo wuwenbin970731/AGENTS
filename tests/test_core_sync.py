@@ -75,7 +75,7 @@ class CoreSyncTest(unittest.TestCase):
         return core.Config(self.config_path)
 
     def prepare(self, selected=None):
-        record = core.prepare(self.save_config(), selected)
+        record = core.prepare(self.save_config(), selected, current_surface="terminal")
         self.batch_path = Path(record["batch"])
         self.batch = core.Batch(self.batch_path)
         return record
@@ -112,9 +112,32 @@ class CoreSyncTest(unittest.TestCase):
         checked = json.loads(command(sys.executable, planctl, "check", parent.parent / "orchestration/plan.json"))
         self.assertEqual(checked["节点数"], 3)
         self.assertEqual(strategy["nodes"][1]["workspace"], "registry:a")
-        self.assertEqual(strategy["nodes"][1]["session_name"], strategy["nodes"][1]["terminal_title"])
+        self.assertEqual(strategy["nodes"][1]["session_name"], strategy["nodes"][1]["display_title"])
+        self.assertEqual(strategy["schema"], 3)
+        self.assertEqual(strategy["nodes"][1]["surface"], "terminal")
+        self.assertEqual(strategy["nodes"][1]["surface_source"], "current_session")
         cli = self.control / ".tasks/bin/taskctl"
         self.assertEqual(json.loads(command(cli, "--root", self.control, "doctor"))["errors"], 0)
+
+    def test_prepare_requires_surface_before_creating_control_records(self):
+        before = {str(p.relative_to(self.control)) for p in self.control.rglob("*")}
+        with self.assertRaisesRegex(ValueError, "current-surface"):
+            core.prepare(self.save_config())
+        self.assertEqual({str(p.relative_to(self.control)) for p in self.control.rglob("*")}, before)
+
+    def test_prepare_chat_default_and_explicit_override_are_frozen(self):
+        for target in (None, "terminal"):
+            with self.subTest(target=target):
+                result = core.prepare(self.save_config(), ["a"], surface=target or "same", current_surface="chat")
+                batch = core.Batch(Path(result["batch"]))
+                parent = self.control / batch.data["task"]["path"]
+                plan = json.loads((parent.parent / "orchestration/plan.json").read_text())
+                self.assertEqual(plan["origin"]["surface"], "chat")
+                self.assertEqual(plan["nodes"][1]["surface"], target or "chat")
+                self.assertEqual(plan["nodes"][1]["surface_source"], "plan" if target else "current_session")
+                self.assertIn("载体：" + (target or "chat"), batch.render())
+                # Fixtures start no workers; close only their private test batch journal.
+                (Path(result["batch"]) / "closed.json").write_text('{"basis":"test fixture, no workers"}')
 
     def test_entry_is_cwd_independent_and_enabled_selection_is_explicit(self):
         self.registry["repos"][1]["enabled"] = False
@@ -243,9 +266,9 @@ class CoreSyncTest(unittest.TestCase):
     def test_duplicate_active_batches_rejected_until_explicit_close(self):
         self.prepare(["a"])
         with self.assertRaisesRegex(ValueError, "未关闭"):
-            core.prepare(self.save_config(), ["a"])
+            core.prepare(self.save_config(), ["a"], surface="terminal")
         command(sys.executable, SCRIPT, "close", "--batch", self.batch_path, "--basis", "确认无活动 worker，结束测试批次")
-        new = core.prepare(self.save_config(), ["a"])
+        new = core.prepare(self.save_config(), ["a"], surface="terminal")
         self.assertNotEqual(new["batch"], str(self.batch_path))
         with self.assertRaisesRegex(ValueError, "已关闭"):
             self.batch.approval()
@@ -311,7 +334,7 @@ class CoreSyncTest(unittest.TestCase):
 
     def test_runtime_overrides_do_not_rewrite_registry(self):
         before = self.config_path.read_bytes()
-        record = core.prepare(self.save_config(), ["a"], agent="claude", max_parallel=1)
+        record = core.prepare(self.save_config(), ["a"], agent="claude", max_parallel=1, surface="chat")
         batch = core.Batch(record["batch"])
         self.assertEqual(batch.data["agent"], "claude")
         self.assertEqual(batch.data["max_parallel"], 1)
@@ -320,7 +343,7 @@ class CoreSyncTest(unittest.TestCase):
     def test_disjoint_projects_still_serialize_shared_global_target(self):
         self.prepare(["a"])
         with self.assertRaisesRegex(ValueError, "未关闭"):
-            core.prepare(self.save_config(), ["b"])
+            core.prepare(self.save_config(), ["b"], surface="terminal")
 
     def test_observed_inputs_and_unknown_approval_paths_are_checked(self):
         watched = self.a / "settings.json"
@@ -339,7 +362,7 @@ class CoreSyncTest(unittest.TestCase):
     def test_fetch_failure_does_not_use_existing_tracking_ref(self):
         git(self.checkout, "remote", "set-url", "origin", str(self.root / "unavailable"))
         with self.assertRaisesRegex(ValueError, "不回退缓存"):
-            core.prepare(self.save_config(), ["a"])
+            core.prepare(self.save_config(), ["a"], surface="terminal")
         state_root = self.control / ".tasks/.state/core-sync"
         self.assertEqual(list(state_root.glob("*/batch.json")), [])
         self.assertFalse((state_root / "prepare.lock").exists())

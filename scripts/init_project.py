@@ -40,6 +40,7 @@ COPY_MAP = [
     (SOURCE_ROOT / "skills/task-orchestration/scripts/planctl.py", Path(".agents/skills/task-orchestration/scripts/planctl.py")),
     (SOURCE_ROOT / "skills/task-orchestration/scripts/sessionctl.py", Path(".agents/skills/task-orchestration/scripts/sessionctl.py")),
     (SOURCE_ROOT / "skills/task-orchestration/references/session-naming.md", Path(".agents/skills/task-orchestration/references/session-naming.md")),
+    (SOURCE_ROOT / "skills/task-orchestration/references/surfaces.md", Path(".agents/skills/task-orchestration/references/surfaces.md")),
     (SOURCE_ROOT / "skills/core-sync/SKILL.md", Path(".agents/skills/core-sync/SKILL.md")),
     (SOURCE_ROOT / "skills/core-sync/agents/openai.yaml", Path(".agents/skills/core-sync/agents/openai.yaml")),
     (SOURCE_ROOT / "skills/core-sync/references/workflow.md", Path(".agents/skills/core-sync/references/workflow.md")),

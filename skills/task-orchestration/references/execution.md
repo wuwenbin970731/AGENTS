@@ -19,17 +19,17 @@ subtask_execution:
   backend: orca
   mode: manual-sequential
   agent: null
-  surface: terminal
+  surface: same
   title_template: "{parent_short} · {subtask_key} · {title}"
 ```
 
-This is a documented preference section, not an automatically parsed configuration file. Explicit per-item choices override this plan's defaults; current user instructions override stored preferences. Agent is the application/CLI choice, e.g. codex or claude, separate from model and effort. Null Agent requires a choice before launch. Use a user/configuration-selected model or effort only when supplied. An agreed project default counts as a selection; do not infer it from the coordinator's own model.
+This is a documented preference section, not an automatically parsed configuration file. Explicit per-item choices override this plan's defaults; current user instructions override stored preferences. Surface selection follows [surfaces.md](surfaces.md): absent an explicit choice reviewed for this batch, follow the verified current caller, not Orca's UI setting. Review legacy terminal preferences rather than silently treating them as a new user override. Agent is the application/CLI choice, e.g. codex or claude, separate from model and effort. Null Agent requires a choice before launch. Use a user/configuration-selected model or effort only when supplied. An agreed project default counts as a selection; do not infer it from the coordinator's own model.
 
 A request such as “按默认方式执行这些 Subtask” expresses execution intent. First present the concrete visual execution tree under [visual-review.md](visual-review.md), then obtain user approval of that plan before launch. If the user already approved the same tree and requested execution, do not ask again. “创建三个 Subtask” only creates tasks; surface the execution option without starting agents. Do not request launch confirmation repeatedly within the reviewed and authorized plan. Plan Review is separate from later per-Subtask acceptance, which remains mandatory in manual mode. Do not start real workers while merely designing this workflow.
 
 ## 2. Plan record and write ownership
 
-The schema 1 example below remains the legacy flat/direct-child protocol. For descendant execution use schema 2 from [descendants.md](descendants.md), its node-level scheduling and `planctl.py`; do not flatten a multi-level strategy into `items`. Existing schema 1 records remain readable, but must be explicitly migrated and reviewed before using the schema 2 helper. Preserve old attempts and acceptance records; never auto-launch during migration.
+The schema 1 example below remains the legacy terminal flat/direct-child protocol. New descendant plans use schema 3 from [descendants.md](descendants.md) and [surfaces.md](surfaces.md), its node-level scheduling and `planctl.py`; do not flatten a multi-level strategy into `items`. Existing schema 2 plans retain terminal semantics, original fields and digests. Existing schema 1 records remain readable, but must be explicitly migrated and reviewed before using the descendant helper. Preserve old attempts and acceptance records; never auto-launch during migration.
 
 Save each plan at `orchestration/<plan-id>.json` inside the selected parent Task directory. Generate an ID with a timestamp and random suffix, not a title. Register that exact resource in the parent's Context Map with a condition such as “executing or recovering this batch”. Prefer a single bounded plan record; split old attempt evidence into declared resources if size grows past the context budget. Load with `context list/read` before editing an existing plan.
 
@@ -69,7 +69,7 @@ Array order is execution order. Store authorization as `planned` or `authorized`
 
 - `attempt_id`, `state`, `created_at`, `updated_at`;
 - `naming`: desired session name, identity marker, source/proof reference, provider thread ID, pending/verified/conflict status and read-back timestamp; see [session-naming.md](session-naming.md). Keep private store references rather than raw launch data.
-- `binding`: backend, workspace selector, terminal handle, Agent session/handle when available, Orca run/task/dispatch IDs and launch operation/request IDs when available;
+- `requested_surface`, `actual_surface` and `binding`: backend, workspace reference, Agent handle, optional Orca session ID, terminal handle only for actual terminal instances, Orca run/task/dispatch IDs and launch operation/request IDs when available; schema 3 runtime leaves keep these in ordered `attempts` as specified in surfaces.md;
 - `result`: outcome (`succeeded`/`failed`), evidence references, blockers, or null;
 - `acceptance`: status (`pending`/`accepted`/`rejected`), actor (`user`/`coordinator`), basis, timestamp;
 - `recovery`: observations and superseded-attempt reference when relevant.
@@ -97,14 +97,14 @@ Schema 2 permits descendants with the ancestor chain and per-parent policies des
 
 Read Orca's installed `orchestration` guide and relevant conditional references. Keep Orca task/run IDs distinct from persistent Task IDs. Use a supervised worker: results and questions must return to the coordinator. Prefer Orca's own dependency and message machinery where compatible, but keep human acceptance as a coordinator-side release gate. Do not queue a dispatch in a way that allows it to start before that gate.
 
-For each eligible task:
+For each eligible task, use [surfaces.md](surfaces.md) for schema 3 explicit creation, actual-surface verification and supervised binding. The legacy terminal steps below remain applicable to historical terminal plans; do not impose a PTY requirement on a schema 3 chat:
 
 1. Persist a `prepared` attempt with stable attempt ID. Verify no active attempt for this Task is recorded in another declared plan; inspect live runtime when recovering. Without exclusive ownership, do not launch.
 2. Select the existing workspace, terminal title, Agent and brief. Verify current CLI support for terminal surface, naming and keeping terminals open. Load `references/low-level-topology.md` when composing a terminal and worker binding rather than using the high-level launch. Resolve custom Agent commands through Orca's configuration/guide; never invent executable arguments from an Agent name.
 3. Save `launching` immediately before the external operation. Record each successfully created resource before the next external step (e.g. terminal creation before dispatch). Follow the version-matched receipt and store operation IDs. Do not paste the same prompt again to prove delivery.
-4. Save exact returned bindings. Set `running` only when launch/dispatch is confirmed by Orca; if evidence proves only input acceptance, record that limit and continue the documented observation path. Title and terminal surface must match the plan; a chat is a mismatch, not success.
+4. Save exact returned bindings. Set `running` only when launch/dispatch is confirmed by Orca; if evidence proves only input acceptance, record that limit and continue the documented observation path. Title and actual surface must match the reviewed plan. A different surface, in either direction, is a mismatch, not success.
 5. For Codex, resolve the exact thread binding and perform best-effort persistent naming as soon as it is available, independently of worker progress. A normal resumed session reuses its verified record; a new session requires a new attempt/binding. Read [session-naming.md](session-naming.md) before identity initialization or naming. Do not treat terminal title, orchestration task ID, or session-tree root ID as a provider thread ID.
-6. Keep the terminal available for user inspection, using documented keep-open support. Report its label and stable handle. End the coordinating turn when Orca instructs it to wait; let Orca wake the coordinator.
+6. Keep the execution instance available for user inspection, using documented keep-open support. Report its actual surface, label and stable handle. Read and steer either kind with dispatch-based worker-read/send. End the coordinating turn when Orca instructs it to wait; let Orca wake the coordinator.
 
 The worker brief must be self-contained enough to begin without the parent's full conversation:
 
@@ -136,7 +136,7 @@ prepared -> launching -> running -> reported
 
 `reported` means a worker returned a result, including a failed result. Acceptance is independent and initially `pending`. A terminal exit, idle signal or successful launch is not a worker success report. An interrupted worker without a completion report requires recovery, not inferred completion.
 
-- Manual sequential: for a successful report, inspect returned evidence, checkpoint the child as `awaiting_user`, report findings, and wait. A failed result stays blocked for repair rather than entering acceptance as a success. Only explicit user acceptance of this Subtask sets `accepted` with actor `user` and releases the next terminal. An ambiguous “继续” should not be interpreted as accepting several tasks; clarify if the target or intent is unclear. Rejection records `rejected` and keeps the successor blocked.
+- Manual sequential: for a successful report, inspect returned evidence, checkpoint the child as `awaiting_user`, report findings, and wait. A failed result stays blocked for repair rather than entering acceptance as a success. Only explicit user acceptance of this Subtask sets `accepted` with actor `user` and releases the next worker. An ambiguous “继续” should not be interpreted as accepting several tasks; clarify if the target or intent is unclear. Rejection records `rejected` and keeps the successor blocked.
 - Automatic sequential: the coordinator compares evidence against the frozen criteria. Set `accepted` with actor `coordinator` and basis only when supported. Missing evidence or a failure blocks progression; request a worker follow-up or user decision as appropriate. Do not turn a worker's self-assessment into automatic acceptance.
 - Parallel: reported tasks are individually reviewed by the coordinator against criteria; dependencies release after accepted results. If the user requested human review for an item, preserve that gate. Report each outcome separately; one failure does not become a batch success.
 - A selected Task reaches `completed` only after its required acceptance. If a worker wrote completed early in manual mode, reconcile it to `awaiting_user` with revision checking. Never rely solely on Task status to bypass the plan gate.
@@ -152,7 +152,7 @@ On resume, load the selected parent entry, then its declared plan through budget
 - `launching` or `unknown`: inspect receipts and live resources. Use supported replay IDs only according to Orca's recovery guide. Never repeat a fresh launch because no output arrived.
 - `running`: reconcile the actual worker and previously handled inbox messages; await Orca wakes rather than installing polling loops.
 - `reported` + pending manual acceptance: resume waiting for the user; never infer acceptance from elapsed time, a new session, or silence.
-- Lost terminal: retain the attempt and evidence; distinguish a closed terminal from lost task results. Reuse/reopen through documented Orca flow when possible. An uncertain old worker must be reconciled/fenced according to Orca before replacement, not assumed dead.
-- Cancellation: stop launching successors, record the user's request and confirmed runtime outcome. Do not claim cancellation stopped a worker without evidence. Do not delete terminals or workspaces automatically.
+- Lost execution instance: retain the attempt and evidence; distinguish a closed terminal/chat from lost task results. Reuse/reopen through documented Orca flow when possible. An uncertain old worker must be reconciled/fenced according to Orca before replacement, not assumed dead.
+- Cancellation: stop launching successors, record the user's request and confirmed runtime outcome. Do not claim cancellation stopped a worker without evidence. Do not delete terminal/chat instances or workspaces automatically.
 
 The Skill does not promise unattended progress while Orca/coordinator is unavailable. Persisted records support resumption; actual wake behavior is provided by Orca and needs live validation in the target installation.

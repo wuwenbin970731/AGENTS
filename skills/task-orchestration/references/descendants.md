@@ -2,7 +2,7 @@
 
 ## 使用范围与工具
 
-用户可以选择“仅直接子任务”“整个任务树”或“指定后代分支”。普通创建仍使用 task-runtime。直接子任务的既有 schema 1 记录可继续按原协议恢复；后代编排使用 schema 2，不静默升级历史记录。
+用户可以选择“仅直接子任务”“整个任务树”或“指定后代分支”。普通创建仍使用 task-runtime。直接子任务的既有 schema 1 记录可继续按原协议恢复；新后代编排使用 schema 3；旧 schema 2 保留 terminal 语义和原摘要，不静默升级历史记录。双模式解析与绑定先读 [surfaces.md](surfaces.md)。
 
 `planctl.py` 是 Python 标准库实现的本地校验与调度辅助工具，不启动 Agent，不写入状态，不管理后台进程。Skill 主 Agent 仍负责持久化、Orca 调用、证据检查和用户沟通。
 
@@ -18,9 +18,9 @@ python3 <skill-dir>/scripts/planctl.py ready <plan.json> --state <state.json>
 
 1. 使用有深度/数量边界的 `taskctl tree/children` 获取 Meta。发现更深节点时逐层查询；检查 `remaining_count` 及边界节点的 `child_count`，禁止把深度截断误当成叶子。任一直接子列表未完整获取时，不能声明该分支覆盖完整；拆分批次或继续有界查询。
 2. 只为实际调度或汇总检查需要的准确契约读取对应 Task 入口；不批量加载所有后代正文。`tree` Meta 不含全部依赖/revision 字段，使用所选节点的 `taskctl show` Meta 获取，不根据标题猜测依赖。
-3. 在 schema 2 中逐节点记录完整的 `known_children`（现场核对的全部直接子 ID）与有序的 `children`（本轮选中的直接子 ID）。选中后代须保留到本轮根的祖先链；不能把孙节点直接挂成根的孩子。脚本只校验输入一致性，协调者必须对照真实 Meta 核对层级、子列表、依赖与 revision，不能伪造完整覆盖。
+3. 在 schema 2/3 中逐节点记录完整的 `known_children`（现场核对的全部直接子 ID）与有序的 `children`（本轮选中的直接子 ID）。选中后代须保留到本轮根的祖先链；不能把孙节点直接挂成根的孩子。脚本只校验输入一致性，协调者必须对照真实 Meta 核对层级、子列表、依赖与 revision，不能伪造完整覆盖。
 4. 根默认验收串行，各节点 `mode` 省略时继承父层模式；显式指定可以覆盖。`children` 顺序就是串行顺序。并行只推进选集内已满足依赖的分支。
-5. 有选定 children 的节点负责协调汇总，不新建 terminal。无已知 children 的叶子负责执行，必须明确 `agent`、`terminal_title`、`workspace`。父节点的独立编码工作应拆成一个显式、无重叠的叶子 Subtask，本版不把同一节点同时当作 worker 和协调节点。
+5. 有选定 children 的节点负责协调汇总，不新建执行实例。无已知 children 的叶子负责执行：schema 3 必须明确 `agent`、已解析 `surface`、`surface_source`、`display_title`、`workspace`；旧 schema 2 仍使用 `terminal_title`。父节点的独立编码工作应拆成一个显式、无重叠的叶子 Subtask，本版不把同一节点同时当作 worker 和协调节点。
 6. 可以选取部分后代分支；未选子节点显示在执行树中。`complete` 由全体已知子节点是否选中、子树是否完整覆盖自底向上计算；部分覆盖的汇总验收只代表本轮批次，不得把整个 Task 写成 completed，也不得释放要求其完整交付的依赖。
 
 计划最多 1000 节点、64 层；超限拆分为明确批次。发现过程仍服从 taskctl 每次查询自身边界，不做无限递归读取。
@@ -33,7 +33,7 @@ python3 <skill-dir>/scripts/planctl.py ready <plan.json> --state <state.json>
 
 | 字段 | 含义 |
 |---|---|
-| schema | 固定为 2；不改变 Task schema 5 |
+| schema | 新计划为 3，兼容旧 2；不改变 Task schema 5 |
 | plan_version | 策略版本，实质改变时递增 |
 | revision | 计划记录写入版本，不参与策略摘要 |
 | root_task | 本轮根 Task 的稳定 ID，可以是原树任意父节点 |
@@ -42,7 +42,7 @@ python3 <skill-dir>/scripts/planctl.py ready <plan.json> --state <state.json>
 | review | status、plan_version、plan_digest、artifact、basis，批准时 status 为 approved |
 | authorization | state 为 authorized、basis 记录执行意图依据 |
 
-逐节点字段：`task_id`、`subtask_key`、`title`、`task_revision_at_plan`、`children`、`known_children`、`depends_on`、`completion_criteria`。按需添加 `mode`；叶子必须补 `agent`、`terminal_title`、`workspace`，Codex 可选 `session_name`，缺省与 terminal_title 相同；它是持久化会话名，不能只重命名终端标签代替。模型与 effort 仅在明确选择后填写。按既有协议在独立状态资源中保存 `attempts` 及 bindings，脚本不从标题推断实例。
+逐节点字段：`task_id`、`subtask_key`、`title`、`task_revision_at_plan`、`children`、`known_children`、`depends_on`、`completion_criteria`。按需添加 `mode`；schema 3 叶子必须补 `agent`、`surface`、`surface_source`、`display_title`、`workspace`，且顶层记录 `origin` 和 `defaults.surface`，详见 surfaces.md；旧 schema 2 保留原字段。Codex 可选 `session_name`，缺省与对应展示名称相同；它是持久化会话名，不能只重命名终端标签代替。模型与 effort 仅在明确选择后填写。按既有协议在独立状态资源中保存 `attempts` 及 bindings，脚本不从标题推断实例。
 
 可选 `acceptance_actor: user` 为自动串行/并行里的某项增加人工验收；不得设置 coordinator 来绕过上层验收串行。本轮根的最终汇总默认也由用户验收。
 
@@ -77,7 +77,7 @@ python3 <skill-dir>/scripts/planctl.py ready <plan.json> --state <state.json>
 - phase：pending、launching、running、reported、failed、unknown。prepared attempt 尚未触发外部操作，对应节点仍 pending；启动前先持久化 launching。
 - outcome：reported 时必须为 succeeded 或 failed。仅 succeeded 且证据满足验收条件才可 accepted。
 - acceptance：pending、accepted、rejected；actor 为 user 或 coordinator，依据必须可追溯。记录时间和精确批准依据，不能凭沉默或 worker 自评编造验收。
-- attempts：沿用执行协议中的稳定 attempt ID、Orca bindings、实际回执、时间、结果与恢复历史。不要丢弃之前的 attempt。`planctl` 不验证回执真实性，须在真实 Orca 环境核对。
+- attempts：沿用执行协议中的稳定 attempt ID、Orca bindings、实际回执、时间、结果与恢复历史。上例的空列表仅适用于无实例的汇总节点；schema 3 执行叶子在 running/reported 时须包含 [surfaces.md](surfaces.md) 定义的匹配载体与 dispatch 绑定。不要丢弃之前的 attempt。`planctl` 不验证回执真实性，须在真实 Orca 环境核对。
 
 执行循环：
 
@@ -97,4 +97,4 @@ python3 <skill-dir>/scripts/planctl.py ready <plan.json> --state <state.json>
 
 失败、unknown、验收拒绝均不自动重启或放行依赖。并行中无关分支可以继续，串行后项停留。按 Orca 恢复协议核对旧 attempt，再决定跟进或新建 attempt；不能把状态手工清空来伪造待启动。已验收交付发生返工时检查下游影响，受影响的派生验收必须重新评估，不能保留失效的父层通过记录。
 
-迁移 schema 1 时保留原计划与历史，映射真实 Task ID、层级和 attempt，生成新 schema 2 计划与状态；对变更后的范围/角色/验收方式重新 Review。工具不自动迁移或推测历史验收。
+迁移 schema 1 时保留原计划与历史，映射真实 Task ID、层级和 attempt，生成新 schema 3 计划与状态；对变更后的范围/角色/验收方式重新 Review。工具不自动迁移或推测历史验收。已有 schema 2 无须为继续 terminal 执行而升级。

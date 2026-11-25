@@ -2,11 +2,11 @@
 
 ## 职责与时机
 
-主 Agent 为每个 Codex attempt 准备预期名称和随机唯一 marker，负责身份校验、外部命名与结果记录。默认会话名等于已 Review 的 terminal_title，也可在计划中明确 session_name。改名字不需要子 Agent 执行自然语言请求。
+主 Agent 为每个 Codex attempt 准备预期名称和随机唯一 marker，负责身份校验、外部命名与结果记录。默认会话名等于已 Review 的展示名称（schema 3 的 display_title；旧 schema 2 的 terminal_title），也可在计划中明确 session_name。terminal/chat 的实际载体绑定见 [surfaces.md](surfaces.md)，Orca chat 展示名与 provider 会话名分别核验。改名字不需要子 Agent 执行自然语言请求。
 
 拿到准确绑定后尽早设置，理想情况下在业务工作开始前；若只能初始化后取得 ID，则主 Agent 同时处理，不要求 worker 暂停。初始还没有持久化用户条目时记 pending，等正常生命周期事件/初始化消息到达后再试；不要为命名启动额外模型回合。
 
-禁止向 worker terminal 插入 /status、/rename、额外 prompt 或 resume；不通过 thread/resume 接管 writer，不改数据库或 rollout 文件。命名状态独立于执行、验收和调度：pending/conflict 不阻塞业务，也不作为 completed 的条件。
+禁止向 terminal/chat worker 注入 /status、/rename、额外 prompt 或 resume；不通过 thread/resume 接管 writer，不改数据库或 rollout 文件。命名状态独立于执行、验收和调度：pending/conflict 不阻塞业务，也不作为 completed 的条件。
 
 同一已验证 thread 后续只读核验；新的真实 thread 要新的 attempt/marker。正常 follow-up、resume 继续使用最初的命名绑定与 proof scope，不因 Orca 后续派发创建了新 Task ID 就把旧 first-message 身份改写。预期标题实质变化须先更新计划并 Review，再显式允许更名；已发现的人工改名不自动覆盖。
 

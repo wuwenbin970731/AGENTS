@@ -31,25 +31,25 @@ Show, directly on nodes or in a linked compact legend/table:
 
 - Stable Task ID/key, short title, inclusion/exclusion and selection boundary.
 - Each parent's effective mode: manual sequential, automatic sequential or parallel; label inherited versus overridden modes when applicable.
-- Coordinator/aggregate versus execution role, and which nodes actually create terminals.
+- Coordinator/aggregate versus execution role, and which nodes create terminal or chat execution instances.
 - Serial order and parallel groups, human acceptance gates and automatic evidence-check gates. Plan Review approval and result acceptance are separate events.
 - Dependencies, including cross-branch constraints that a containment tree alone cannot show; expose unresolved dependencies, cycles, conflicting edits and other blockers before dispatch.
-- Resolved Agent, explicit model/effort if any, terminal name, Codex persistent session name and workspace placement for execution nodes. Never fabricate private runtime handles before launch.
+- Resolved Agent, explicit model/effort if any, resolved surface, its selection source, display title, Codex persistent session name and workspace placement for execution nodes. Never fabricate private runtime handles before launch.
 
 Do not present a truncated tree as complete. Use bounded Meta queries; if the limit prevents a complete plan, split into explicit batches or mark the Review incomplete and do not launch hidden work.
 
 ## Review lifecycle
 
-1. Resolve and freeze the concrete selection, ordering, mode, roles, criteria, Agent, naming and placement. Check dependencies and edit scopes before requesting Review.
+1. Resolve and freeze the concrete selection, ordering, mode, roles, criteria, Agent, concrete surface, naming and placement. Check dependencies and edit scopes before requesting Review.
 2. Persist the plan with `plan_version`, review `pending`, and a snapshot for that version; present the visual and explain its progression in a few sentences.
 3. Record explicit user approval with the reviewed version/artifact and a short basis. Only an approved, authorized version can launch. Approval of this Skill design is not approval of any future Task execution tree.
-4. Material changes to selection, mode, dependencies, roles, acceptance criteria, Agent/model, naming convention or workspace placement require a new plan version, regenerated visual and Review before affected new launches. Preserve earlier snapshots/approval history; do not overwrite them.
+4. Material changes to selection, mode, dependencies, roles, acceptance criteria, Agent/model, execution surface, naming convention or workspace placement require a new plan version, regenerated visual and Review before affected new launches. Preserve earlier snapshots/approval history; do not overwrite them.
 5. Normal progress, returned handles, timestamps and Task revision increments do not require a new strategy Review. A predeclared retry may follow the approved recovery policy; a retry that changes execution scope or leaves an old worker uncertain must be reconciled first.
 6. A strategy change does not itself cancel running workers. Record the proposed change and its impact; continue only within existing authorization until the affected plan is approved and runtime state reconciled.
 
 ## 后代编排的执行树
 
-后代调度使用 [descendants.md](descendants.md) 的 schema 2 计划和 `planctl.py`。`render` 从同一计划生成中文执行树；`ready` 结合已记录执行状态计算前沿。图像展示、调度计算和真实 Orca 执行的证据边界分别说明。
+后代调度使用 [descendants.md](descendants.md) 的 schema 2/3 计划和 `planctl.py`。`render` 从同一计划生成中文执行树；`ready` 结合已记录执行状态计算前沿。图像展示、调度计算和真实 Orca 执行的证据边界分别说明。
 
 A multi-level strategy attaches a scheduling policy to each parent, composing an execution tree rather than one global mode:
 
@@ -71,7 +71,7 @@ Here Root's policy controls advancement from S1 to S2. S1's policy controls its 
 生效的层级规则（字段与边界详见后代编排协议）：
 
 - Root defaults to manual sequential; unspecified nested modes inherit their parent's effective mode, with explicit per-parent overrides.
-- Parents with selected children coordinate/aggregate/check; selected leaves execute. The main coordinator handles aggregate nodes by default; they do not automatically get separate Agents or terminals. A parent doing independent implementation requires an explicit, non-overlapping execution scope.
+- Parents with selected children coordinate/aggregate/check; selected leaves execute. The main coordinator handles aggregate nodes by default; they do not automatically get separate Agents, terminals or chats. A parent doing independent implementation requires an explicit, non-overlapping execution scope.
 - Acceptance is on an edge: the parent's policy determines how a child's result releases siblings. A parent's own completion additionally requires its selected children, aggregate criteria and its upstream acceptance gate; children succeeding alone does not complete the parent.
 - Excluded descendants and required unselected work must remain visible. A partial selection cannot claim completion of an entire parent without satisfying that parent's full contract.
 - Cross-level dependencies target stable Task identities and release only after the referenced node's required acceptance, not on a descendant's individual completion.
