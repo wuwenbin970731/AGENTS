@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -490,6 +491,12 @@ depends_on: {yaml_scalar(dependencies)}
 - 当前方案或决定：<待补充>
 - 阻塞与解除条件：无。
 - 下一次更新 Task 的触发点：形成设计结论或完成首个已验证里程碑。
+
+## 共享约定
+
+- 有用户确认的稳定术语、参数或共同前提时，按需创建本地 `CONTEXT.md`；没有实际内容不创建空文件。
+- 使用 `taskctl context shared-list/shared-read` 加载祖先链及本地约定，保存 fingerprint；恢复、执行、验收前 shared-check，变化时重读。
+- 本地补充作用于自身及后代；冲突需声明来源、原因及例外范围，不静默覆盖。
 
 ## 按需上下文地图
 
@@ -1144,6 +1151,154 @@ def cmd_context_read(args: argparse.Namespace) -> None:
     sys.stdout.write(content)
 
 
+def shared_chain(project_root: Path, identifier: str) -> list[tuple[Path, dict[str, Any]]]:
+    """Resolve only metadata; shared context is a narrow ancestor disclosure exception."""
+    path, meta = resolve_task(project_root, identifier)
+    records = all_tasks(project_root)
+    by_id: dict[str, list[tuple[Path, dict[str, Any]]]] = {}
+    for item in records:
+        by_id.setdefault(str(item[1].get("id")), []).append(item)
+    chain = []
+    seen: set[str] = set()
+    while True:
+        task_id = str(meta.get("id"))
+        if task_id in seen:
+            raise TaskCtlError(f"parent cycle detected at {task_id}")
+        if len(by_id.get(task_id, [])) != 1:
+            raise TaskCtlError(f"shared context requires a unique task ID: {task_id}")
+        if len(chain) >= 100:
+            raise TaskCtlError("shared context ancestor chain exceeds 100 tasks; refusing to truncate")
+        seen.add(task_id)
+        chain.append((path, meta))
+        parent = meta.get("parent_task")
+        if parent is None:
+            break
+        if not isinstance(parent, str) or not parent:
+            raise TaskCtlError(f"invalid parent_task for {task_id}")
+        matches = by_id.get(parent, [])
+        if len(matches) != 1:
+            raise TaskCtlError(f"parent task missing or ambiguous: {parent}")
+        path, meta = matches[0]
+    return list(reversed(chain))
+
+
+def shared_path(project_root: Path, task_path: Path) -> Path:
+    target = task_path.parent / "CONTEXT.md"
+    # Deny symlink aliases even within .tasks, including aliases of task directories.
+    if task_path.absolute() != task_path.resolve() or target.is_symlink():
+        raise TaskCtlError(f"shared context symlink is not allowed: {target}")
+    if not target.resolve().is_relative_to(task_root(project_root).resolve()):
+        raise TaskCtlError("shared context is outside the project's .tasks directory")
+    if target.exists() and not target.is_file():
+        raise TaskCtlError(f"shared context must be a regular file: {target}")
+    return target
+
+
+def shared_digest(target: Path) -> tuple[str, int]:
+    """Hash without buffering or following a final symlink; missing is a real version."""
+    try:
+        descriptor = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return "missing", 0
+    except OSError as error:
+        raise TaskCtlError(f"cannot open shared context: {target}: {error}") from error
+    with os.fdopen(descriptor, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise TaskCtlError(f"shared context must be a regular file: {target}")
+        digest = hashlib.sha256()
+        size = 0
+        while chunk := handle.read(65536):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
+
+
+def shared_manifest(project_root: Path, identifier: str) -> dict[str, Any]:
+    sources = []
+    for path, meta in shared_chain(project_root, identifier):
+        target = shared_path(project_root, path)
+        digest, size = shared_digest(target)
+        sources.append({
+            "task": meta["id"], "resource": str(target.relative_to(project_root)),
+            "exists": digest != "missing", "sha256": digest,
+            "size_bytes": size, "estimated_tokens": estimated_tokens(size),
+        })
+    fingerprint = hashlib.sha256(json.dumps(sources, sort_keys=True).encode()).hexdigest()
+    return {"fingerprint": fingerprint, "size_bytes": sum(row["size_bytes"] for row in sources),
+            "sources": sources}
+
+
+def cmd_shared_list(args: argparse.Namespace) -> None:
+    emit(shared_manifest(args.project_root, args.task))
+
+
+def cmd_shared_check(args: argparse.Namespace) -> None:
+    manifest = shared_manifest(args.project_root, args.task)
+    changed = manifest["fingerprint"] != args.expect_fingerprint
+    emit({"changed": changed, **manifest})
+    if changed:
+        raise SystemExit(3)
+
+
+def cmd_shared_read(args: argparse.Namespace) -> None:
+    budget = args.max_tokens * 3 if args.max_tokens is not None else args.max_bytes
+    if budget <= 0:
+        raise TaskCtlError("shared context read budget must be positive")
+    manifest = shared_manifest(args.project_root, args.task)
+    if manifest["size_bytes"] > budget:
+        raise TaskCtlError(f"shared context exceeds total read budget: {manifest['size_bytes']} bytes; budget is {budget} bytes")
+    loaded = []
+    remaining = budget
+    for source in manifest["sources"]:
+        if not source["exists"]:
+            continue
+        target = args.project_root / source["resource"]
+        try:
+            descriptor = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as handle:
+                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                    raise TaskCtlError("shared context is no longer a regular file")
+                data = handle.read(remaining + 1)
+            if len(data) > remaining:
+                raise TaskCtlError("shared context changed and exceeds total read budget")
+            if hashlib.sha256(data).hexdigest() != source["sha256"]:
+                raise TaskCtlError("shared context changed during read; retry", 3)
+            loaded.append({**source, "content": data.decode("utf-8")})
+            remaining -= len(data)
+        except (OSError, UnicodeError) as error:
+            raise TaskCtlError(f"cannot read shared context: {error}") from error
+    if shared_manifest(args.project_root, args.task)["fingerprint"] != manifest["fingerprint"]:
+        raise TaskCtlError("shared context changed during read; retry", 3)
+    emit({**manifest, "sources": loaded})
+
+
+def cmd_shared_write(args: argparse.Namespace) -> None:
+    path, meta = resolve_task(args.project_root, args.task)
+    try:
+        content = args.from_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise TaskCtlError(f"cannot read proposed shared context: {error}") from error
+    if not content.strip():
+        raise TaskCtlError("shared context must contain an actual agreement, not an empty file")
+    with task_lock(args.project_root, str(meta["id"])):
+        target = shared_path(args.project_root, path)
+        entry = path.read_text(encoding="utf-8")
+        current, _, _ = split_frontmatter(entry)
+        require_revision(current, args.expect_revision)
+        errors = validate_writable_meta(current)
+        if errors:
+            raise TaskCtlError("invalid task for shared context write: " + "; ".join(errors))
+        digest, _ = shared_digest(target)
+        if digest != args.expect_sha256:
+            raise TaskCtlError(f"shared context conflict: expected {args.expect_sha256}, current SHA-256 is {digest}", 3)
+        atomic_write(target, content)
+        atomic_write(path, update_frontmatter(entry, {
+            "revision": args.expect_revision + 1, "updated_at": now_iso(),
+        }))
+    emit({"task": meta["id"], "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+          "revision": args.expect_revision + 1})
+
+
 def cmd_children(args: argparse.Namespace) -> None:
     _, selected = resolve_task(args.project_root, args.task)
     tasks, _, children = task_graph(args.project_root)
@@ -1458,6 +1613,12 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         relative_length = len(str(path.relative_to(args.project_root)))
         if relative_length > 240:
             issue("warning", path, f"task path exceeds 240 characters: {relative_length}")
+        try:
+            shared = shared_path(args.project_root, path)
+            if shared.exists() and shared.stat().st_size > DEFAULT_CONTEXT_MAX_BYTES:
+                issue("warning", shared, "CONTEXT.md exceeds the default shared read budget; keep agreements concise")
+        except (OSError, TaskCtlError) as error:
+            issue("error", path, str(error))
         for row in parse_context_map(text):
             try:
                 checked_resource(path, row["resource"], {row["resource"]})
@@ -1631,6 +1792,26 @@ def build_parser() -> argparse.ArgumentParser:
     budget.add_argument("--max-bytes", type=int, default=DEFAULT_CONTEXT_MAX_BYTES)
     budget.add_argument("--max-tokens", type=int)
     context_read.set_defaults(func=cmd_context_read)
+
+    shared_list = context_commands.add_parser("shared-list", help="list and fingerprint ancestor CONTEXT.md sources")
+    shared_list.add_argument("task")
+    shared_list.set_defaults(func=cmd_shared_list)
+    shared_read = context_commands.add_parser("shared-read", help="read the complete shared context chain within a total budget")
+    shared_read.add_argument("task")
+    shared_budget = shared_read.add_mutually_exclusive_group()
+    shared_budget.add_argument("--max-bytes", type=int, default=DEFAULT_CONTEXT_MAX_BYTES)
+    shared_budget.add_argument("--max-tokens", type=int)
+    shared_read.set_defaults(func=cmd_shared_read)
+    shared_check = context_commands.add_parser("shared-check", help="compare the chain with a previously loaded fingerprint")
+    shared_check.add_argument("task")
+    shared_check.add_argument("--expect-fingerprint", required=True)
+    shared_check.set_defaults(func=cmd_shared_check)
+    shared_write = context_commands.add_parser("shared-write", help="write only the selected task's local CONTEXT.md with conflict checks")
+    shared_write.add_argument("task")
+    shared_write.add_argument("--from", dest="from_file", type=Path, required=True)
+    shared_write.add_argument("--expect-sha256", required=True, help="previous local SHA-256, or missing for first creation")
+    shared_write.add_argument("--expect-revision", type=int, required=True)
+    shared_write.set_defaults(func=cmd_shared_write)
 
     update = subparsers.add_parser("update", help="atomically update task checkpoint metadata")
     update.add_argument("task")

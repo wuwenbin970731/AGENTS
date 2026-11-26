@@ -179,14 +179,14 @@ python3 /path/to/AGENTS/scripts/core_sync.py render --batch <batch-path>
 请使用项目内的 task-runtime 处理这个需求。
 先判断它是 light、tracked 还是 rigorous。
 如果需要 Task，先只搜索现有 Task 的 Meta；复用目标和完成标准相同的 Task。
-没有匹配项时再创建新 Task。确定当前 Task 后只读取 TASK.md，其他资源严格按照 Context Map 按需加载。
+没有匹配项时再创建新 Task。确定当前 Task 后读取 TASK.md，通过共享入口加载祖先链及本地 CONTEXT.md，其他资源严格按照 Context Map 按需加载。
 ```
 
 恢复已有任务时发送：
 
 ```text
 请使用项目内的 task-runtime 继续 Task <task-id>。
-先读取它的 TASK.md 并重新核对 Git、代码、测试、日志和外部状态；不要默认读取 iterations 或 archive。只有当前动作满足 Context Map 的读取条件时，才读取对应单个资源。
+先读取它的 TASK.md，通过共享入口加载祖先链及本地 CONTEXT.md，并重新核对 Git、代码、测试、日志和外部状态；不要默认读取 iterations 或 archive。只有当前动作满足 Context Map 的读取条件时，才读取对应单个资源。
 ```
 
 即使 Agent 客户端没有发现项目本地 Skill，项目 `AGENTS.md` 仍保存了最小加载协议；此时可以明确要求它使用 `.tasks/bin/taskctl`。
@@ -301,9 +301,19 @@ project/
 - 读取 `TASK.md` 不代表展开其中链接。
 - Context Map 必须说明每个资源保存什么、何时读取。
 - 资源不会递归展开它引用的其他文件。
-- 其他 Task 默认只暴露 Meta。
+- 其他 Task 默认只暴露 Meta；选中 Task 后，祖先链固定名称 CONTEXT.md 是明确的共享约定读取例外，不授权读取祖先 TASK.md 或其他资源。
 - `children/tree/lineage` 只返回有深度和数量上限的 L0；选择一个节点不会自动打开其他节点。
 - Context Map 不能跨入 `subtasks/`，资源读取前先查看大小和 Token 估算。
+
+### Task 的 CONTEXT.md
+
+每个 Task 都支持按需创建的 `CONTEXT.md`，用于稳定术语、固定参数、单位、口径和共同前提。没有实际约定就不创建文件；旧任务无需批量迁移。可按“术语与定义 / 固定参数与口径 / 共同前提与范围 / 显式局部例外”组织，只保留有内容的章节。
+
+约定对所属 Task 及后代生效，子 Task 可以补充。冲突必须写明继承来源、例外原因与范围，不采用隐式就近覆盖，兄弟任务不互相继承。Agent 负责辨认和解决自然语言冲突；CLI 只保留来源和原文。更改父级验收口径应回到父 Task 处理。
+
+`shared-list` 会流式计算内容哈希，不输出正文；`shared-read` 默认总正文预算 32 KiB，JSON 包装开销另计，超限不输出部分内容，链接不展开。整链 fingerprint 包括缺失文件，以检测创建、修改、删除。恢复、执行、验收前用上次成功读取的 fingerprint 检查，变化后重读并评估影响。列清单或检查本身不表示已加载新约定。
+
+`shared-write` 对本地文件哈希和 Task revision 同时检查，冲突 exit 3，锁冲突 exit 4。它先原子替换资源，再更新入口，二者不是一个事务，中断后需检查实际文件；直接编辑不遵守 CLI 锁，需协调。共享文件应简短，详细材料通过 Context Map 按需读取。完整契约见 [加载协议](skills/task-runtime/references/protocol.md#10-shared-task-agreements)。
 
 ## `taskctl` 使用
 
@@ -324,6 +334,16 @@ project/
 
 # 显式读取一个已声明资源；默认 32 KiB，也可以给出本次 Token 预算
 .tasks/bin/taskctl context read <task-id> design/CURRENT.md --max-tokens 8000
+
+# 加载共享约定：先列来源/大小/内容哈希，再按总预算读取
+.tasks/bin/taskctl context shared-list <task-id>
+.tasks/bin/taskctl context shared-read <task-id> --max-tokens 8000
+
+# 恢复、执行、验收前，比较上次成功读取返回的 fingerprint；变化 exit 3
+.tasks/bin/taskctl context shared-check <task-id> --expect-fingerprint <loaded-fingerprint>
+
+# 更新明确选中的所属 Task；首次创建 expect-sha256 使用 missing
+.tasks/bin/taskctl context shared-write <owner-task-id> --from /tmp/confirmed-context.md --expect-sha256 <local-sha256-or-missing> --expect-revision 3
 
 # 关联 Task 仍只返回 Meta
 .tasks/bin/taskctl related <task-id>

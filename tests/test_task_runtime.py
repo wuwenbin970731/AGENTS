@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import json
+import contextlib
+import importlib.util
+import io
+from types import SimpleNamespace
+from unittest import mock
 from pathlib import Path
 import subprocess
 import sys
@@ -758,6 +763,146 @@ output.write_text(sys.stdin.read(), encoding="utf-8")
         )
         self.assertEqual(rejected_update.returncode, 2)
         self.assertEqual(json.loads(self.taskctl("show", str(meta["id"])).stdout)["revision"], 1)
+
+
+
+    def shared_file(self, task: dict[str, object]) -> Path:
+        return (self.project / str(task["path"])).parent / "CONTEXT.md"
+
+    def shared_list(self, task: dict[str, object]) -> dict:
+        return json.loads(self.taskctl("context", "shared-list", str(task["id"])).stdout)
+
+    def test_shared_chain_sources_exceptions_and_disclosure(self) -> None:
+        self.initialize()
+        root = self.create_task()
+        child = self.create_child(str(root["id"]), "child", "child")
+        leaf = self.create_child(str(child["id"]), "leaf", "leaf")
+        sibling = self.create_child(str(root["id"]), "sibling", "sibling")
+        self.assertFalse(self.shared_file(root).exists())
+        self.shared_file(root).write_text("resolution = 1024\n", encoding="utf-8")
+        self.shared_file(child).write_text("explicit local exception: resolution = 512\n", encoding="utf-8")
+        self.shared_file(sibling).write_text("SIBLING_CONTEXT_SECRET", encoding="utf-8")
+        ancestor_entry = self.project / str(root["path"])
+        ancestor_entry.write_text(ancestor_entry.read_text() + "\nANCESTOR_BODY_SECRET\n")
+        listing = self.shared_list(leaf)
+        self.assertEqual([row["task"] for row in listing["sources"]], [root["id"], child["id"], leaf["id"]])
+        self.assertFalse(listing["sources"][-1]["exists"])
+        self.assertNotIn("resolution", json.dumps(listing))
+        loaded = self.taskctl("context", "shared-read", str(leaf["id"]))
+        data = json.loads(loaded.stdout)
+        self.assertEqual(len(data["sources"]), 2)
+        self.assertIn("explicit local exception", data["sources"][1]["content"])
+        self.assertNotIn("ANCESTOR_BODY_SECRET", loaded.stdout)
+        self.assertNotIn("SIBLING_CONTEXT_SECRET", loaded.stdout)
+        found = self.taskctl("search", "Progressive").stdout
+        self.assertNotIn("resolution", found)
+        sibling_read = self.taskctl("context", "shared-read", str(sibling["id"])).stdout
+        self.assertNotIn("explicit local exception", sibling_read)
+
+    def test_shared_fingerprint_detects_parent_changes_creation_and_deletion(self) -> None:
+        self.initialize()
+        root = self.create_task()
+        child = self.create_child(str(root["id"]), "child", "child")
+        old = self.shared_list(child)["fingerprint"]
+        same = self.taskctl("context", "shared-check", str(child["id"]), "--expect-fingerprint", old)
+        self.assertFalse(json.loads(same.stdout)["changed"])
+        target = self.shared_file(root)
+        for value in ("first", "second", None):
+            if value is None:
+                target.unlink()
+            else:
+                target.write_text(value)
+            changed = self.taskctl("context", "shared-check", str(child["id"]), "--expect-fingerprint", old, check=False)
+            self.assertEqual(changed.returncode, 3)
+            self.assertTrue(json.loads(changed.stdout)["changed"])
+            old = json.loads(changed.stdout)["fingerprint"]
+
+    def test_shared_total_budget_and_invalid_content(self) -> None:
+        self.initialize()
+        root = self.create_task()
+        child = self.create_child(str(root["id"]), "child", "child")
+        self.shared_file(root).write_text("R" * 60)
+        self.shared_file(child).write_text("C" * 60)
+        rejected = self.taskctl("context", "shared-read", str(child["id"]), "--max-bytes", "100", check=False)
+        self.assertEqual(rejected.returncode, 2)
+        self.assertEqual(rejected.stdout, "")
+        accepted = self.taskctl("context", "shared-read", str(child["id"]), "--max-tokens", "40")
+        self.assertEqual(json.loads(accepted.stdout)["size_bytes"], 120)
+        self.assertEqual(self.taskctl("context", "shared-read", str(child["id"]), "--max-bytes", "0", check=False).returncode, 2)
+        self.shared_file(child).write_bytes(b"\xff")
+        bad_utf8 = self.taskctl("context", "shared-read", str(child["id"]), check=False)
+        self.assertEqual(bad_utf8.returncode, 2)
+        self.assertEqual(bad_utf8.stdout, "")
+
+    def test_shared_writes_require_both_versions_and_preserve_conflicts(self) -> None:
+        self.initialize()
+        root = self.create_task()
+        source = self.project / "agreement.md"
+        source.write_text("baseline = v1\n")
+        def write(revision: str, digest: str):
+            return self.taskctl("context", "shared-write", str(root["id"]), "--from", str(source), "--expect-revision", revision, "--expect-sha256", digest, check=False)
+        created = write("1", "missing")
+        self.assertEqual(created.returncode, 0, created.stderr)
+        digest = json.loads(created.stdout)["sha256"]
+        source.write_text("baseline = v2\n")
+        self.assertEqual(write("1", digest).returncode, 3)
+        self.assertEqual(write("2", "missing").returncode, 3)
+        self.assertEqual(self.shared_file(root).read_text(), "baseline = v1\n")
+        # Direct resource edits do not need to change TASK.md to invalidate the write.
+        self.shared_file(root).write_text("externally updated")
+        self.assertEqual(write("2", digest).returncode, 3)
+        current = self.shared_list(root)["sources"][0]["sha256"]
+        self.assertEqual(write("2", current).returncode, 0)
+        source.write_text("  \n")
+        self.assertEqual(write("3", json.loads(self.taskctl("context", "shared-list", str(root["id"])).stdout)["sources"][0]["sha256"]).returncode, 2)
+        self.assertEqual(self.shared_file(root).read_text(), "baseline = v2\n")
+
+    def test_shared_lock_conflict_and_change_during_read(self) -> None:
+        self.initialize()
+        root = self.create_task()
+        spec = importlib.util.spec_from_file_location("shared_runtime_test", SOURCE_TASKCTL)
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        source = self.project / "agreement.md"
+        source.write_text("confirmed agreement")
+        with runtime.task_lock(self.project.resolve(), str(root["id"])):
+            locked = self.taskctl("context", "shared-write", str(root["id"]), "--from", str(source), "--expect-revision", "1", "--expect-sha256", "missing", check=False)
+        self.assertEqual(locked.returncode, 4)
+        self.assertFalse(self.shared_file(root).exists())
+        self.shared_file(root).write_text("original agreement")
+        manifest = runtime.shared_manifest
+        def change_after_manifest(*args):
+            result = manifest(*args)
+            self.shared_file(root).write_text("changed agreement")
+            return result
+        output = io.StringIO()
+        with mock.patch.object(runtime, "shared_manifest", side_effect=change_after_manifest):
+            with contextlib.redirect_stdout(output):
+                with self.assertRaises(runtime.TaskCtlError) as error:
+                    runtime.cmd_shared_read(SimpleNamespace(project_root=self.project.resolve(), task=str(root["id"]), max_bytes=32768, max_tokens=None))
+        self.assertEqual(error.exception.exit_code, 3)
+        self.assertEqual(output.getvalue(), "")
+
+    def test_shared_rejects_symlinks_and_broken_ancestry(self) -> None:
+        self.initialize()
+        root = self.create_task()
+        child = self.create_child(str(root["id"]), "child", "child")
+        outside = self.project / "outside.md"
+        outside.write_text("DO_NOT_DISCLOSE")
+        target = self.shared_file(root)
+        target.symlink_to(outside)
+        for command in ("shared-list", "shared-read"):
+            rejected = self.taskctl("context", command, str(child["id"]), check=False)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertNotIn("DO_NOT_DISCLOSE", rejected.stdout + rejected.stderr)
+        self.assertEqual(self.taskctl("doctor", check=False).returncode, 1)
+        target.unlink()
+        path = self.project / str(child["path"])
+        original = path.read_text()
+        path.write_text(original.replace(f'parent_task: "{root["id"]}"', 'parent_task: "nonexistent"'))
+        self.assertEqual(self.taskctl("context", "shared-list", str(child["id"]), check=False).returncode, 2)
+        path.write_text(original.replace(f'parent_task: "{root["id"]}"', f'parent_task: "{child["id"]}"'))
+        self.assertEqual(self.taskctl("context", "shared-list", str(child["id"]), check=False).returncode, 2)
 
 
 class GlobalAgentsSyncTest(unittest.TestCase):

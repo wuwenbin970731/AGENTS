@@ -51,10 +51,13 @@ Use exactly the sections needed from this stable shape:
 
 - `任务契约`: goal, completion criteria, scope, and non-goals.
 - `当前工作状态`: current problem, facts, decisions, blocks, and next checkpoint condition.
+- `共享约定`: optional reminder to load inherited/local CONTEXT.md and check its fingerprint.
 - `按需上下文地图`: resources and deterministic read conditions.
 - `依赖契约`: explicit dependencies and provided or consumed outputs.
 
 Context Map paths are relative to the current task directory. Declare only files, not directories or globs. A loader must reject undeclared paths, missing files, absolute paths, `..` escapes, symlink escapes, `subtasks/`, and any path governed by a descendant `TASK.md`.
+
+`CONTEXT.md` is an optional reserved shared-agreement file beside TASK.md. It adds no required metadata and needs no empty-file migration. Its ancestor-chain loading exception is defined in protocol.md section 10; arbitrary Context Map paths still cannot traverse task boundaries.
 
 ## 4. Limits and compatibility
 

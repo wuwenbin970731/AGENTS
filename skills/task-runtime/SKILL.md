@@ -25,9 +25,18 @@ For an execution plan, Orca worker dispatch, acceptance gates, or execution reco
 - L0: use `search`, `show` without `--entry`, or `related`; these expose metadata only.
 - For task trees, use bounded `children`, `tree`, or `lineage`; these keep every returned node at L0 and never open descendants.
 - When the user needs a visual relationship and status overview, use bounded `graph`; it renders the same L0 tree as a derived HTML snapshot and never becomes task truth.
-- L1: use `show --entry` for the selected task. Reading the entry does not authorize reading linked resources.
+- L1: use `show --entry` for the selected task. Then run `context shared-list <task>` and budgeted `context shared-read <task>` to load the ancestor chain and local `CONTEXT.md`. Save the returned fingerprint in working context. This narrow exception never opens ancestor entries or linked resources.
 - L2/L3: run `context list`, inspect the reported size, select only the resource whose `read_when` condition matches the current work, then run budgeted `context read`. Never recursively expand resource links or cross into `subtasks/`.
 - Other tasks stay at L0 unless their exact contract affects the current decision or the user asks to switch tasks.
+
+## Shared agreements
+
+- Create `CONTEXT.md` only when the first user-confirmed stable agreement exists: terms, parameters, units, scope or shared premises. Keep progress, logs and unconfirmed proposals elsewhere. No empty files or historical bulk extraction.
+- Agreements apply to the owning Task and descendants. Children may add local agreements; an exception must name the inherited agreement, its owner, reason and local scope. Never silently override or merge conflicting meanings. Siblings do not inherit from each other; cross-tree sharing uses explicit dependencies.
+- Before resuming, executing or accepting work, run `context shared-check <task> --expect-fingerprint <loaded-fingerprint>`. Exit 3 means reload and assess impact before continuing. Only a successful shared read establishes a loaded fingerprint; listing/checking alone does not acknowledge changed content.
+- `shared-read` returns source-labelled documents root first, within a total 32 KiB body budget by default; use `--max-bytes` or `--max-tokens` explicitly if needed. It never expands links or truncates the chain. Resolve semantic conflicts before dependent work.
+- For local writes, prepare the complete confirmed text in a temporary file, obtain the local SHA-256 from `shared-list` (`missing` for first creation), and use `context shared-write <owner-task> --from <file> --expect-sha256 <hash-or-missing> --expect-revision N`. Exit 3 requires rereading and merging. It changes only the selected owner's local file and increments its Task revision. A child must explicitly surface an ancestor change before writing the ancestor.
+- Keep the shared file short. Put detailed explanations in declared Context Map resources. Never copy inherited files into children or automatically follow their links.
 
 ## Maintain a task
 

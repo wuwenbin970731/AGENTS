@@ -23,6 +23,7 @@
 ├── TASK_ITERATION_TEMPLATE.md
 └── YYYY-MM-DD/<root-task-id>/
     ├── TASK.md
+    ├── CONTEXT.md              # 有已确认稳定约定时创建
     ├── design/
     ├── runbooks/
     ├── decisions/
@@ -86,11 +87,22 @@
 - 大型日志和产物写入 `evidence/` 或项目正式产物目录。
 - 旧式任务原文迁入 `archive/`。
 
-每个可加载资源都必须列入 Context Map，并写明读取条件。加载器只允许显式读取已声明的任务内文件，拒绝绝对路径、`..`、目录、glob、符号链接逃逸、`subtasks/` 和任何后代 Task 边界。
+除下述固定名称的共享约定入口外，每个可加载资源都必须列入 Context Map，并写明读取条件。加载器只允许显式读取已声明的任务内文件，拒绝绝对路径、`..`、目录、glob、符号链接逃逸、`subtasks/` 和任何后代 Task 边界。
 
 `context list` 只检查资源并返回字节数和 Token 估算，不读取正文。`context read` 默认最多读取 32 KiB，也可由调用方显式传入更小或更大的字节/Token 预算；超限时拒绝读取，不静默截断。大资源应按稳定主题拆分后分别登记。
 
 `taskctl graph` 生成的是显式刷新的派生快照，不是 Task 状态源。默认输出到所选 Task 的 `evidence/task-graph.html`，且拒绝越出当前 Task 或写入 `subtasks/`。图谱只包含有深度和数量边界的 L0 Meta；需要作为 Agent 上下文读取时，必须在当前 Task 的 Context Map 中显式登记。渲染器不可用时，继续使用 `tree --format json`，不得把可视化依赖变成 Task 管理的硬依赖。
+
+### Task 共享约定
+
+- `CONTEXT.md` 按需创建，保存用户确认的术语、参数、单位、范围和共同前提；进度、日志、未确认想法留在其他资源。不批量补空文件或自动归纳历史约定。
+- 约定作用于所属 Task 及其后代。子 Task 可以补充；与祖先冲突时明确来源、原因及例外范围，不隐式覆盖。兄弟不互相继承，跨树走依赖契约。
+- 选中/恢复 Task 后执行 `context shared-list <task>`，再执行预算内的 `context shared-read <task>`；只授权祖先链及本地 CONTEXT.md，不打开祖先入口或链接。普通发现仍只读 Meta。
+- shared-list 计算内容指纹但不输出正文；shared-read 按根到当前返回来源和正文，默认总正文预算 32 KiB（JSON 包装另计），支持 max-bytes/max-tokens，超限拒绝完整请求，不截断。缺失文件参与整链 fingerprint，以检测后续创建或删除。
+- 恢复、开始执行和提交验收前，用上次成功读取返回的 fingerprint 执行 `context shared-check <task> --expect-fingerprint <hash>`；exit 3 表示变化，需重新加载并检查影响。只列清单或检查不能代替重新读取。
+- 更新使用 `context shared-write <owner> --from <file> --expect-sha256 <hash-or-missing> --expect-revision N`。仅写明确选中的所属 Task；Task 短时锁内核对内容和 revision，再原子替换资源、递增入口 revision。拒绝空白文件，冲突重读合并。两个文件不构成事务，中断后核对文件，以内容指纹判断变化；直接编辑器不受 CLI 锁保护，需协调。
+- 固定名 CONTEXT.md 通过共享命令读取时免登记 Context Map；详细支持材料仍需登记。文件保持精简，不复制继承内容。CLI 保留来源而不自动消解自然语言冲突，由 Agent 在继续依赖工作前解决。
+- 祖先链缺失、重复 ID、循环、符号链接及非普通文件均报错；链超过 100 个节点明确拒绝，不静默遗漏。
 
 ### 递归子 Task
 

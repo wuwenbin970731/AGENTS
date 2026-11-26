@@ -11,6 +11,7 @@
 7. Checkpoint writes
 8. Session and concurrency behavior
 9. Legacy compatibility
+10. Shared Task agreements
 
 ## 1. Storage boundaries
 
@@ -40,7 +41,7 @@ Never scan task bodies to choose candidates. Do not search tasks for `light` wor
 | L2 | Current design, runbook, or decision | Context Map condition matches current work |
 | L3 | Iteration, evidence, or archive | A specific conclusion must be traced or verified |
 
-Opening one level never recursively opens the next. Other tasks remain at L0 unless their contract directly affects the current decision.
+Opening one level never recursively opens the next. Other tasks remain at L0 unless their contract directly affects the current decision. After selection, the shared-agreement exception below authorizes only ancestor `CONTEXT.md` files, never ancestor entries or arbitrary resources.
 
 ## 4. Recursive task traversal
 
@@ -48,7 +49,7 @@ Opening one level never recursively opens the next. Other tasks remain at L0 unl
 - `tree` defaults to depth one and a 20-node output budget. It has an implementation-level maximum depth and item limit; storage depth itself is not hard-coded.
 - `lineage` returns only L0 ancestor breadcrumbs and the selected task.
 - A parent entry never embeds complete child entries or status histories. Aggregates such as `child_count` are computed from Meta.
-- Selecting a child promotes only that child to L1. Ancestors, siblings, and descendants remain at L0 until separately selected.
+- Selecting a child promotes only that child to L1. Ancestors, siblings, and descendants remain at L0 until separately selected, apart from the reserved ancestor CONTEXT.md exception in section 10.
 - A Context Map resource cannot enter `subtasks/` or any directory governed by a descendant `TASK.md`.
 
 ## 5. Derived HTML graph views
@@ -84,3 +85,15 @@ Automatic `subtask_key` allocation and child-directory creation hold the parent 
 ## 9. Legacy compatibility
 
 Schema 4 tasks remain writable in their existing flat locations and participate in virtual trees through `parent_task`. Schema 2/3 tasks remain readable; their `active_iteration` is compatibility metadata and is not automatically loaded. Upgrade only an active or reopened task, preserve its ID and history, and never bulk-move historical tasks merely to normalize layout.
+
+## 10. Shared Task agreements
+
+`CONTEXT.md` is optional and created only for confirmed stable definitions, parameters, scope or premises. It is not progress, logs or unconfirmed design. Its conventions govern the owner and descendants. Children can add local agreements; conflicting inherited meanings require an explicit exception naming source, reason and scope. No implicit nearest-file override, sibling inheritance or automatic semantic merge. Cross-tree sharing remains an explicit dependency.
+
+After selection/resumption, use `context shared-list <task>` followed by budgeted `context shared-read <task>`. Before execution and acceptance, compare the fingerprint returned by the last successful read with `context shared-check <task> --expect-fingerprint <hash>`. Exit 3 means changed: reload and assess impact; a listing/check alone does not count as loading the new version.
+
+These JSON commands traverse exact parent IDs root first (including schema 4 virtual parents), reject cycles, missing/duplicate parents, and fail beyond 100 nodes rather than omit ancestors. They never disclose ancestor TASK bodies or follow links inside agreements. Each source has owner ID, project-relative path, existence, SHA-256, byte count and estimated tokens. Missing files participate in the fingerprint so later creation/deletion is visible. shared-list hashes bytes in chunks without returning content; it is not a metadata-only discovery command. shared-read returns existing sources with content and a whole-chain fingerprint. The body budget is total across all files (default 32 KiB, tokens estimated at 3 bytes each); JSON envelope is additional. No partial content is emitted on errors. Recheck the chain before emission; this detects changes during reading but is not a multi-file filesystem transaction. Symbolic links and non-regular shared files are rejected.
+
+CONTEXT.md is a reserved, fixed-name shared resource, exempt from per-task Context Map registration only via these commands. Ordinary context read retains its declaration and path checks. No schema migration or empty-file backfill is needed. Detailed supporting documents still require Context Map conditions.
+
+`context shared-write <owner> --from <file> --expect-sha256 <hash-or-missing> --expect-revision N` rejects blank content and writes only the selected owner's local file. It checks both content SHA-256 and Task revision under that Task's short lock, atomically replaces CONTEXT.md, then increments TASK.md revision. Conflict exits 3; lock contention exits 4. Cooperating CLI writers are serialized; direct editor writes do not honor this lock and must be coordinated. The two file replacements are not a transaction: after interruption inspect both files; content fingerprints, not revision alone, determine whether agreements changed. Never silently rewrite an ancestor from child work. This command does not interpret or validate natural-language exceptions: the agent must explicitly resolve those before dependent work.

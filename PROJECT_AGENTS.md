@@ -37,7 +37,7 @@
 
 1. 用户明确给出 Task 时直接读取该入口；否则优先检查稳定会话绑定。
 2. 仍未确定时用 `taskctl search` 只搜索 Meta，最多返回八个候选。
-3. 选中后只读取 `TASK.md`，不自动打开其中链接。
+3. 选中后读取 `TASK.md`，不自动打开其中链接；按 task-runtime 的共享约定入口预算加载祖先链及本地 `CONTEXT.md`，不读取祖先入口。
 4. 根据 Context Map 的读取条件显式加载单个资源，不递归展开。
 5. 关联 Task 默认只读 Meta；不得批量扫描 `.tasks/` 正文。
 6. 父子树使用有深度和数量上限的 `taskctl children/tree/lineage` 查看；这些命令只返回 L0，不自动打开任何节点正文。
@@ -49,6 +49,7 @@
 - 只在目标或决定变化、设计就绪、已验证里程碑、阻塞、长任务变化、中断、完成或重开时更新。
 - 使用 `revision` 和 `taskctl update/write --expect-revision` 写入；冲突时重新读取并合并，不静默覆盖。
 - 详细设计、runbook、decision、iteration 和 evidence 按需创建并登记到 Context Map。资源不得跨入 `subtasks/`；读取前检查大小并使用预算。新 Task 不强制创建 F000。
+- 已确认稳定约定按需写入所属 Task 的 `CONTEXT.md`，由后代共享，冲突显式解决；恢复、执行和验收前检查已加载指纹，变化时重读。写入使用 `context shared-write` 校验内容哈希和 revision。
 - Task 可纳入 Git，但未经用户确认提交范围，不自动暂存、提交或推送。
 
 ## 修改与解释
