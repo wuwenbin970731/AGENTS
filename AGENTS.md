@@ -10,7 +10,7 @@
 - `skills/task-runtime/`：Task 触发、渐进加载协议及 `taskctl` 权威实现。
 - `scripts/init_project.py`：新项目首次初始化器。
 - `scripts/sync_global_agents.py`：用户级 `AGENTS.md` 的受管块安装与安全更新器。
-- `.tasks/`：本仓库自身的 Task Runtime 和任务实例。
+- `.tasks/`：本仓库自身的 Task Runtime 和任务实例。运行模板、配置和脚本纳入 Git；日期目录下的具体任务实例仅保存在本地，不暂存、提交或推送。
 
 ## Task 路由
 
